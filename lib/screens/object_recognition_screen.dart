@@ -1,5 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import '../services/app_state.dart';
 import '../services/camera_service.dart';
 import '../services/object_detection_service.dart';
 import '../theme/app_theme.dart';
@@ -53,7 +54,9 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
 
   @override
   void dispose() {
-    _stopStream();
+    // stopStream без await — dispose не может быть async
+    _isStreaming = false;
+    try { _cameraService.controller?.stopImageStream(); } catch (_) {}
     _scanLineController.dispose();
     _detectionService.removeListener(_onDetectionUpdate);
     _detectionService.dispose();
@@ -86,12 +89,19 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
     });
   }
 
-  void _stopStream() {
+  Future<void> _stopStream() async {
     if (!_isStreaming) return;
     _isStreaming = false;
     try {
       _cameraService.controller?.stopImageStream();
     } catch (_) {}
+
+    // Сохраняем сессию если есть результаты
+    final results = _detectionService.results;
+    if (results.isNotEmpty && mounted) {
+      await AppStateScope.of(context).onRecognitionFinished(results);
+    }
+    if (mounted) setState(() {});
   }
 
   void _clearResults() {
