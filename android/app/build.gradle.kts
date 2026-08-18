@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.wardrobe"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -22,8 +22,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.wardrobe"
-        minSdk = 21
-        targetSdk = 34
+        minSdk = flutter.minSdkVersion
+        targetSdk = 36
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
         // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
