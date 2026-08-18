@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../widgets/camera_preview_widget.dart';
 
 class ObjectRecognitionScreen extends StatefulWidget {
   const ObjectRecognitionScreen({super.key});
@@ -136,104 +137,98 @@ class _CameraPreview extends StatelessWidget {
           ),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Фоновая сетка (имитация камеры)
-            CustomPaint(painter: _GridPainter()),
-
-            // Имитация объектов в кадре
-            if (objects.isNotEmpty) ...[
+      child: CameraPreviewWidget(
+        overlays: [
+          // Bounding-боксы распознанных объектов
+          if (objects.isNotEmpty) ...[
+            Positioned(
+              left: 40, top: 60, width: 120, height: 80,
+              child: _BoundingBox(label: objects[0].name, confidence: objects[0].confidence),
+            ),
+            if (objects.length > 1)
               Positioned(
-                left: 40, top: 60, width: 120, height: 80,
-                child: _BoundingBox(label: objects[0].name, confidence: objects[0].confidence),
+                right: 50, top: 100, width: 90, height: 70,
+                child: _BoundingBox(label: objects[1].name, confidence: objects[1].confidence),
               ),
-              if (objects.length > 1)
-                Positioned(
-                  right: 50, top: 100, width: 90, height: 70,
-                  child: _BoundingBox(label: objects[1].name, confidence: objects[1].confidence),
-                ),
-              if (objects.length > 2)
-                Positioned(
-                  left: 60, bottom: 40, width: 100, height: 60,
-                  child: _BoundingBox(label: objects[2].name, confidence: objects[2].confidence),
-                ),
-            ],
+            if (objects.length > 2)
+              Positioned(
+                left: 60, bottom: 40, width: 100, height: 60,
+                child: _BoundingBox(label: objects[2].name, confidence: objects[2].confidence),
+              ),
+          ],
 
-            // Линия сканирования
-            if (isRecognizing)
-              AnimatedBuilder(
-                animation: scanLineAnimation,
-                builder: (context, _) {
-                  return Positioned(
-                    top: scanLineAnimation.value * 200,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      height: 2,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.transparent,
-                            AppTheme.secondary.withValues(alpha: 0.8),
-                            AppTheme.secondary,
-                            AppTheme.secondary.withValues(alpha: 0.8),
-                            Colors.transparent,
-                          ],
-                        ),
+          // Линия сканирования
+          if (isRecognizing)
+            AnimatedBuilder(
+              animation: scanLineAnimation,
+              builder: (context, _) {
+                return Positioned(
+                  top: scanLineAnimation.value * 200,
+                  left: 0,
+                  right: 0,
+                  child: Container(
+                    height: 2,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.transparent,
+                          AppTheme.secondary.withValues(alpha: 0.8),
+                          AppTheme.secondary,
+                          AppTheme.secondary.withValues(alpha: 0.8),
+                          Colors.transparent,
+                        ],
                       ),
                     ),
-                  );
-                },
-              ),
+                  ),
+                );
+              },
+            ),
 
-            // Иконка "нет камеры" когда не сканируем и нет объектов
-            if (!isRecognizing && objects.isEmpty)
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.camera_alt_outlined,
-                      size: 48,
-                      color: Colors.white.withValues(alpha: 0.4),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Нажмите "Распознать"',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.5),
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            // Счётчик объектов
-            if (objects.isNotEmpty)
-              Positioned(
-                top: 12, right: 12,
+          // Подсказка когда не сканируем и нет объектов
+          if (!isRecognizing && objects.isEmpty)
+            Positioned(
+              bottom: 16,
+              left: 0,
+              right: 0,
+              child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(
-                    color: AppTheme.primary.withValues(alpha: 0.85),
+                    color: Colors.black.withValues(alpha: 0.5),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    '${objects.length} объект${_plural(objects.length)}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    'Нажмите "Распознать"',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.9),
+                      fontSize: 13,
                     ),
                   ),
                 ),
               ),
-          ],
-        ),
+            ),
+
+          // Счётчик объектов
+          if (objects.isNotEmpty)
+            Positioned(
+              top: 12, left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppTheme.primary.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${objects.length} объект${_plural(objects.length)}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -281,24 +276,6 @@ class _BoundingBox extends StatelessWidget {
   }
 }
 
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.04)
-      ..strokeWidth = 1;
-    const step = 36.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
 
 class _ResultsPanel extends StatelessWidget {
   final List<_RecognizedObject> objects;
