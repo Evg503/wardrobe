@@ -1,4 +1,7 @@
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import '../services/camera_service.dart';
+import '../services/object_detection_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/camera_preview_widget.dart';
 
@@ -6,26 +9,23 @@ class ObjectRecognitionScreen extends StatefulWidget {
   const ObjectRecognitionScreen({super.key});
 
   @override
-  State<ObjectRecognitionScreen> createState() => _ObjectRecognitionScreenState();
+  State<ObjectRecognitionScreen> createState() =>
+      _ObjectRecognitionScreenState();
 }
 
 class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
     with SingleTickerProviderStateMixin {
-  bool _isRecognizing = false;
-  final List<_RecognizedObject> _objects = [];
+  late final CameraService _cameraService;
+  late final ObjectDetectionService _detectionService;
   late AnimationController _scanLineController;
   late Animation<double> _scanLineAnimation;
 
-  final List<_RecognizedObject> _mockResults = const [
-    _RecognizedObject('Диван', 'Мебель', 0.94, Icons.weekend, Color(0xFF2D4A3E)),
-    _RecognizedObject('Журнальный стол', 'Мебель', 0.89, Icons.table_bar, Color(0xFF1A3A5C)),
-    _RecognizedObject('Торшер', 'Освещение', 0.82, Icons.light, Color(0xFF5C3D1A)),
-    _RecognizedObject('Ковёр', 'Текстиль', 0.77, Icons.texture, Color(0xFF3D1A5C)),
-  ];
+  bool _isStreaming = false;
 
   @override
   void initState() {
     super.initState();
+
     _scanLineController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1800),
@@ -33,75 +33,119 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
     _scanLineAnimation = Tween<double>(begin: 0, end: 1).animate(
       CurvedAnimation(parent: _scanLineController, curve: Curves.easeInOut),
     );
+
+    _cameraService = CameraService();
+    _detectionService = ObjectDetectionService();
+
+    _detectionService.addListener(_onDetectionUpdate);
+    _detectionService.initialize();
+    _cameraService.addListener(_onCameraUpdate);
+    _cameraService.initialize();
+  }
+
+  void _onCameraUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  void _onDetectionUpdate() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _stopStream();
     _scanLineController.dispose();
+    _detectionService.removeListener(_onDetectionUpdate);
+    _detectionService.dispose();
+    _cameraService.removeListener(_onCameraUpdate);
+    _cameraService.dispose();
     super.dispose();
   }
 
-  void _startRecognition() {
-    setState(() {
-      _isRecognizing = true;
-      _objects.clear();
-    });
+  // ── Управление ──────────────────────────────────────────────────────────
 
-    // Имитация последовательного добавления объектов (заглушка)
-    for (int i = 0; i < _mockResults.length; i++) {
-      Future.delayed(Duration(milliseconds: 800 + i * 600), () {
-        if (mounted) {
-          setState(() {
-            _objects.add(_mockResults[i]);
-            if (i == _mockResults.length - 1) {
-              _isRecognizing = false;
-            }
-          });
-        }
-      });
-    }
+  void _startRecognition() {
+    if (!_cameraService.isInitialized) return;
+    _detectionService.clearResults();
+    _startStream();
+  }
+
+  void _startStream() {
+    final controller = _cameraService.controller;
+    if (controller == null || _isStreaming) return;
+
+    setState(() => _isStreaming = true);
+
+    controller.startImageStream((CameraImage image) {
+      final desc = controller.description;
+      _detectionService.processFrame(
+        image,
+        desc.sensorOrientation,
+        desc.lensDirection,
+      );
+    });
+  }
+
+  void _stopStream() {
+    if (!_isStreaming) return;
+    _isStreaming = false;
+    try {
+      _cameraService.controller?.stopImageStream();
+    } catch (_) {}
   }
 
   void _clearResults() {
-    setState(() {
-      _objects.clear();
-      _isRecognizing = false;
-    });
+    _stopStream();
+    _detectionService.clearResults();
+    setState(() {});
   }
+
+  // ── UI ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final objects = _detectionService.results;
+    final isRecognizing = _isStreaming || _detectionService.isProcessing;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Распознавание предметов'),
         actions: [
-          if (_objects.isNotEmpty)
+          if (objects.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline),
               tooltip: 'Очистить',
               onPressed: _clearResults,
+            ),
+          if (_isStreaming)
+            IconButton(
+              icon: const Icon(Icons.stop_circle_outlined),
+              tooltip: 'Остановить',
+              onPressed: _stopStream,
             ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // Камера / видоискатель
+            // Видоискатель с реальной камерой
             Expanded(
               flex: 5,
-              child: _CameraPreview(
-                isRecognizing: _isRecognizing,
-                objects: _objects,
+              child: _CameraView(
+                cameraService: _cameraService,
+                objects: objects,
+                isRecognizing: isRecognizing,
                 scanLineAnimation: _scanLineAnimation,
               ),
             ),
-            // Кнопка и список результатов
+            // Панель результатов
             Expanded(
               flex: 4,
               child: _ResultsPanel(
-                objects: _objects,
-                isRecognizing: _isRecognizing,
+                objects: objects,
+                isRecognizing: isRecognizing,
                 onStart: _startRecognition,
+                errorMessage: _detectionService.errorMessage,
               ),
             ),
           ],
@@ -111,14 +155,18 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
   }
 }
 
-class _CameraPreview extends StatelessWidget {
+// ── Видоискатель ─────────────────────────────────────────────────────────────
+
+class _CameraView extends StatelessWidget {
+  final CameraService cameraService;
+  final List<DetectedObject> objects;
   final bool isRecognizing;
-  final List<_RecognizedObject> objects;
   final Animation<double> scanLineAnimation;
 
-  const _CameraPreview({
-    required this.isRecognizing,
+  const _CameraView({
+    required this.cameraService,
     required this.objects,
+    required this.isRecognizing,
     required this.scanLineAnimation,
   });
 
@@ -138,24 +186,11 @@ class _CameraPreview extends StatelessWidget {
         ],
       ),
       child: CameraPreviewWidget(
+        cameraService: cameraService,
         overlays: [
-          // Bounding-боксы распознанных объектов
-          if (objects.isNotEmpty) ...[
-            Positioned(
-              left: 40, top: 60, width: 120, height: 80,
-              child: _BoundingBox(label: objects[0].name, confidence: objects[0].confidence),
-            ),
-            if (objects.length > 1)
-              Positioned(
-                right: 50, top: 100, width: 90, height: 70,
-                child: _BoundingBox(label: objects[1].name, confidence: objects[1].confidence),
-              ),
-            if (objects.length > 2)
-              Positioned(
-                left: 60, bottom: 40, width: 100, height: 60,
-                child: _BoundingBox(label: objects[2].name, confidence: objects[2].confidence),
-              ),
-          ],
+          // Нормализованные bounding-боксы поверх реального видео
+          if (objects.isNotEmpty)
+            _BoundingBoxOverlay(objects: objects),
 
           // Линия сканирования
           if (isRecognizing)
@@ -184,7 +219,7 @@ class _CameraPreview extends StatelessWidget {
               },
             ),
 
-          // Подсказка когда не сканируем и нет объектов
+          // Подсказка в состоянии ожидания
           if (!isRecognizing && objects.isEmpty)
             Positioned(
               bottom: 16,
@@ -192,17 +227,15 @@ class _CameraPreview extends StatelessWidget {
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.5),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Text(
+                  child: const Text(
                     'Нажмите "Распознать"',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.9),
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: Colors.white, fontSize: 13),
                   ),
                 ),
               ),
@@ -211,9 +244,11 @@ class _CameraPreview extends StatelessWidget {
           // Счётчик объектов
           if (objects.isNotEmpty)
             Positioned(
-              top: 12, left: 12,
+              top: 12,
+              left: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                   color: AppTheme.primary.withValues(alpha: 0.85),
                   borderRadius: BorderRadius.circular(20),
@@ -237,6 +272,37 @@ class _CameraPreview extends StatelessWidget {
     if (n == 1) return '';
     if (n >= 2 && n <= 4) return 'а';
     return 'ов';
+  }
+}
+
+/// Рисует bounding-боксы поверх видеопотока используя нормализованные координаты.
+class _BoundingBoxOverlay extends StatelessWidget {
+  final List<DetectedObject> objects;
+
+  const _BoundingBoxOverlay({required this.objects});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: objects.map((obj) {
+            if (obj.boundingBox == Rect.zero) return const SizedBox.shrink();
+            final box = obj.boundingBox;
+            return Positioned(
+              left: box.left * constraints.maxWidth,
+              top: box.top * constraints.maxHeight,
+              width: box.width * constraints.maxWidth,
+              height: box.height * constraints.maxHeight,
+              child: _BoundingBox(
+                label: obj.label,
+                confidence: obj.confidence,
+              ),
+            );
+          }).toList(),
+        );
+      },
+    );
   }
 }
 
@@ -276,16 +342,19 @@ class _BoundingBox extends StatelessWidget {
   }
 }
 
+// ── Панель результатов ────────────────────────────────────────────────────────
 
 class _ResultsPanel extends StatelessWidget {
-  final List<_RecognizedObject> objects;
+  final List<DetectedObject> objects;
   final bool isRecognizing;
   final VoidCallback onStart;
+  final String? errorMessage;
 
   const _ResultsPanel({
     required this.objects,
     required this.isRecognizing,
     required this.onStart,
+    this.errorMessage,
   });
 
   @override
@@ -307,7 +376,8 @@ class _ResultsPanel extends StatelessWidget {
           // Handle
           Container(
             margin: const EdgeInsets.only(top: 10),
-            width: 40, height: 4,
+            width: 40,
+            height: 4,
             decoration: BoxDecoration(
               color: Colors.grey.shade300,
               borderRadius: BorderRadius.circular(2),
@@ -319,7 +389,9 @@ class _ResultsPanel extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  objects.isEmpty ? 'Готово к распознаванию' : 'Найденные объекты',
+                  objects.isEmpty
+                      ? 'Готово к распознаванию'
+                      : 'Найденные объекты',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: AppTheme.textPrimary,
@@ -329,15 +401,18 @@ class _ResultsPanel extends StatelessWidget {
                   onPressed: isRecognizing ? null : onStart,
                   icon: isRecognizing
                       ? const SizedBox(
-                          width: 14, height: 14,
+                          width: 14,
+                          height: 14,
                           child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white,
+                            strokeWidth: 2,
+                            color: Colors.white,
                           ),
                         )
                       : const Icon(Icons.search, size: 18),
                   label: Text(isRecognizing ? 'Анализ...' : 'Распознать'),
                   style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
                     textStyle: const TextStyle(fontSize: 13),
                   ),
                 ),
@@ -345,55 +420,67 @@ class _ResultsPanel extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: objects.isEmpty
-                ? _EmptyResultsHint(isRecognizing: isRecognizing)
-                : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    itemCount: objects.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      return _ObjectTile(object: objects[index]);
-                    },
-                  ),
+            child: _buildContent(context),
           ),
         ],
       ),
     );
   }
-}
 
-class _EmptyResultsHint extends StatelessWidget {
-  final bool isRecognizing;
-
-  const _EmptyResultsHint({required this.isRecognizing});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Text(
-          isRecognizing
-              ? 'Анализируем предметы в кадре...'
-              : 'Направьте камеру на предмет\nи нажмите "Распознать"',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: AppTheme.textSecondary,
-                height: 1.6,
-              ),
-          textAlign: TextAlign.center,
+  Widget _buildContent(BuildContext context) {
+    if (errorMessage != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text(
+            errorMessage!,
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(color: Colors.red.shade400),
+            textAlign: TextAlign.center,
+          ),
         ),
-      ),
+      );
+    }
+
+    if (objects.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text(
+            isRecognizing
+                ? 'Анализируем предметы в кадре...'
+                : 'Направьте камеру на предмет\nи нажмите "Распознать"',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppTheme.textSecondary,
+                  height: 1.6,
+                ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      itemCount: objects.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) => _ObjectTile(object: objects[index]),
     );
   }
 }
 
 class _ObjectTile extends StatelessWidget {
-  final _RecognizedObject object;
+  final DetectedObject object;
 
   const _ObjectTile({required this.object});
 
   @override
   Widget build(BuildContext context) {
+    final color = _colorForCategory(object.category);
+    final icon = _iconForCategory(object.category);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -406,10 +493,10 @@ class _ObjectTile extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: object.color.withValues(alpha: 0.12),
+              color: color.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(object.icon, color: object.color, size: 20),
+            child: Icon(icon, color: color, size: 20),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -417,7 +504,7 @@ class _ObjectTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  object.name,
+                  object.label,
                   style: const TextStyle(
                     fontWeight: FontWeight.w600,
                     color: AppTheme.textPrimary,
@@ -441,7 +528,7 @@ class _ObjectTile extends StatelessWidget {
                 '${(object.confidence * 100).round()}%',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: object.color,
+                  color: color,
                   fontSize: 15,
                 ),
               ),
@@ -451,7 +538,7 @@ class _ObjectTile extends StatelessWidget {
                 child: LinearProgressIndicator(
                   value: object.confidence,
                   backgroundColor: Colors.grey.shade200,
-                  color: object.color,
+                  color: color,
                   borderRadius: BorderRadius.circular(4),
                   minHeight: 4,
                 ),
@@ -462,20 +549,42 @@ class _ObjectTile extends StatelessWidget {
       ),
     );
   }
-}
 
-class _RecognizedObject {
-  final String name;
-  final String category;
-  final double confidence;
-  final IconData icon;
-  final Color color;
+  Color _colorForCategory(String category) {
+    switch (category) {
+      case 'Мебель':
+        return const Color(0xFF2D4A3E);
+      case 'Освещение':
+        return const Color(0xFF5C3D1A);
+      case 'Текстиль':
+        return const Color(0xFF3D1A5C);
+      case 'Декор':
+        return const Color(0xFF1A5C3D);
+      case 'Электроника':
+        return const Color(0xFF1A3A5C);
+      case 'Техника':
+        return const Color(0xFF5C1A1A);
+      default:
+        return Colors.grey.shade600;
+    }
+  }
 
-  const _RecognizedObject(
-    this.name,
-    this.category,
-    this.confidence,
-    this.icon,
-    this.color,
-  );
+  IconData _iconForCategory(String category) {
+    switch (category) {
+      case 'Мебель':
+        return Icons.chair_outlined;
+      case 'Освещение':
+        return Icons.light_outlined;
+      case 'Текстиль':
+        return Icons.texture;
+      case 'Декор':
+        return Icons.photo_outlined;
+      case 'Электроника':
+        return Icons.devices_outlined;
+      case 'Техника':
+        return Icons.kitchen_outlined;
+      default:
+        return Icons.category_outlined;
+    }
+  }
 }

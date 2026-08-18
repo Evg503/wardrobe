@@ -4,9 +4,19 @@ import '../services/camera_service.dart';
 import '../theme/app_theme.dart';
 
 /// Виджет превью камеры с кнопками управления.
-/// Показывает реальный видеопоток; поверх можно добавить произвольные оверлеи через [overlays].
+///
+/// Показывает реальный видеопоток; поверх можно добавить произвольные
+/// оверлеи через [overlays].
+///
+/// Можно передать внешний [cameraService] — тогда виджет не создаёт
+/// собственный и не освобождает его при dispose. Это нужно когда
+/// родительский экран сам управляет камерой (например, для imageStream).
+/// Если [cameraService] не передан, виджет создаёт свой собственный.
 class CameraPreviewWidget extends StatefulWidget {
-  /// Дочерние виджеты-оверлеи поверх видеопотока (например, bounding-боксы).
+  /// Внешний сервис камеры. Если null — виджет создаст и управляет своим.
+  final CameraService? cameraService;
+
+  /// Оверлеи поверх видеопотока (bounding-боксы, индикаторы и т.д.).
   final List<Widget> overlays;
 
   /// Показывать ли кнопки переключения камеры и вспышки.
@@ -14,6 +24,7 @@ class CameraPreviewWidget extends StatefulWidget {
 
   const CameraPreviewWidget({
     super.key,
+    this.cameraService,
     this.overlays = const [],
     this.showControls = true,
   });
@@ -23,24 +34,31 @@ class CameraPreviewWidget extends StatefulWidget {
 }
 
 class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
-  late final CameraService _cameraService;
+  late final CameraService _service;
+  late final bool _ownsService;
 
   @override
   void initState() {
     super.initState();
-    _cameraService = CameraService();
-    _cameraService.addListener(_onCameraUpdate);
-    _cameraService.initialize();
+    if (widget.cameraService != null) {
+      _service = widget.cameraService!;
+      _ownsService = false;
+    } else {
+      _service = CameraService();
+      _ownsService = true;
+      _service.initialize();
+    }
+    _service.addListener(_onUpdate);
   }
 
-  void _onCameraUpdate() {
+  void _onUpdate() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _cameraService.removeListener(_onCameraUpdate);
-    _cameraService.dispose();
+    _service.removeListener(_onUpdate);
+    if (_ownsService) _service.dispose();
     super.dispose();
   }
 
@@ -51,13 +69,8 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Видеопоток или заглушка
           _buildCameraBody(),
-
-          // Пользовательские оверлеи
           ...widget.overlays,
-
-          // Кнопки управления камерой
           if (widget.showControls) _buildControls(),
         ],
       ),
@@ -65,16 +78,15 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
   }
 
   Widget _buildCameraBody() {
-    if (_cameraService.errorMessage != null) {
-      return _ErrorPlaceholder(message: _cameraService.errorMessage!);
+    if (_service.errorMessage != null) {
+      return _ErrorPlaceholder(message: _service.errorMessage!);
     }
 
-    if (!_cameraService.isInitialized || _cameraService.controller == null) {
+    if (!_service.isInitialized || _service.controller == null) {
       return const _LoadingPlaceholder();
     }
 
-    final controller = _cameraService.controller!;
-
+    final controller = _service.controller!;
     return FittedBox(
       fit: BoxFit.cover,
       child: SizedBox(
@@ -91,20 +103,18 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
       right: 12,
       child: Column(
         children: [
-          // Переключение камеры
-          if (_cameraService.hasMultipleCameras)
+          if (_service.hasMultipleCameras)
             _ControlButton(
               icon: Icons.flip_camera_ios_outlined,
-              onTap: _cameraService.switchCamera,
+              onTap: _service.switchCamera,
               tooltip: 'Переключить камеру',
             ),
           const SizedBox(height: 8),
-          // Вспышка
           _ControlButton(
-            icon: _flashIcon(_cameraService.flashMode),
-            onTap: _cameraService.toggleFlash,
+            icon: _flashIcon(_service.flashMode),
+            onTap: _service.toggleFlash,
             tooltip: 'Вспышка',
-            active: _cameraService.flashMode != FlashMode.off,
+            active: _service.flashMode != FlashMode.off,
           ),
         ],
       ),
@@ -113,17 +123,17 @@ class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
 
   IconData _flashIcon(FlashMode mode) {
     switch (mode) {
-      case FlashMode.off:
-        return Icons.flash_off;
-      case FlashMode.auto:
-        return Icons.flash_auto;
       case FlashMode.always:
         return Icons.flash_on;
+      case FlashMode.auto:
+        return Icons.flash_auto;
       default:
         return Icons.flash_off;
     }
   }
 }
+
+// ── Вспомогательные виджеты ───────────────────────────────────────────────────
 
 class _ControlButton extends StatelessWidget {
   final IconData icon;
