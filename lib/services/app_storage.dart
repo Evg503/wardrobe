@@ -7,6 +7,7 @@ class AppStorage {
   static const _keyRoomsScanned = 'rooms_scanned';
   static const _keyItemsRecognized = 'items_recognized';
   static const _keyRecognitionSessions = 'recognition_sessions';
+  static const _keyScanSessions = 'scan_sessions';
 
   final SharedPreferences _prefs;
 
@@ -47,11 +48,54 @@ class AppStorage {
     await _prefs.setStringList(_keyRecognitionSessions, raw);
   }
 
+  // ── История AR-сканирований ───────────────────────────────────────────────
+
+  List<ScanSession> get scanSessions {
+    final raw = _prefs.getStringList(_keyScanSessions) ?? [];
+    return raw
+        .map((s) => ScanSession.fromJson(jsonDecode(s)))
+        .toList()
+        .reversed
+        .toList();
+  }
+
+  Future<void> saveScanSession(ScanSession session) async {
+    final raw = _prefs.getStringList(_keyScanSessions) ?? [];
+    raw.add(jsonEncode(session.toJson()));
+    await _prefs.setStringList(_keyScanSessions, raw);
+  }
+
   Future<void> clearAll() async {
     await _prefs.remove(_keyRoomsScanned);
     await _prefs.remove(_keyItemsRecognized);
     await _prefs.remove(_keyRecognitionSessions);
+    await _prefs.remove(_keyScanSessions);
   }
+}
+
+/// Одна сессия AR-сканирования планировки.
+class ScanSession {
+  final DateTime timestamp;
+  final int planesDetected;
+  final double totalFloorArea;
+
+  ScanSession({
+    required this.timestamp,
+    required this.planesDetected,
+    required this.totalFloorArea,
+  });
+
+  factory ScanSession.fromJson(Map<String, dynamic> json) => ScanSession(
+        timestamp: DateTime.parse(json['timestamp'] as String),
+        planesDetected: json['planes_detected'] as int,
+        totalFloorArea: (json['total_floor_area'] as num).toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'timestamp': timestamp.toIso8601String(),
+        'planes_detected': planesDetected,
+        'total_floor_area': totalFloorArea,
+      };
 }
 
 // ── Модели ────────────────────────────────────────────────────────────────────

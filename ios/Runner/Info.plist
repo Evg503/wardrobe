@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Wardrobe использует камеру для сканирования комнат и распознавания предметов</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Wardrobe использует датчики движения для AR-сканирования планировки комнаты</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

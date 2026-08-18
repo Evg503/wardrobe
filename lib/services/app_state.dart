@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'app_storage.dart';
+import 'ar_scan_service.dart';
 import 'object_detection_service.dart';
 
 /// Глобальное состояние приложения.
@@ -21,12 +22,19 @@ class AppState extends ChangeNotifier {
   int get itemsRecognized => _storage.itemsRecognized;
   List<RecognitionSession> get recognitionSessions =>
       _storage.recognitionSessions;
+  List<ScanSession> get scanSessions => _storage.scanSessions;
 
   // ── Действия ──────────────────────────────────────────────────────────────
 
-  /// Вызывается когда завершено сканирование планировки.
-  Future<void> onRoomScanned() async {
+  /// Вызывается когда завершено AR-сканирование планировки.
+  Future<void> onScanFinished(ScanResult result) async {
+    if (result.planes.isEmpty) return;
     await _storage.incrementRoomsScanned();
+    await _storage.saveScanSession(ScanSession(
+      timestamp: result.timestamp,
+      planesDetected: result.planes.length,
+      totalFloorArea: result.totalFloorArea,
+    ));
     notifyListeners();
   }
 
