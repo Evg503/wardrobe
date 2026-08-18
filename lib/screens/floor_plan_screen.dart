@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../widgets/camera_preview_widget.dart';
 
 class FloorPlanScreen extends StatefulWidget {
   const FloorPlanScreen({super.key});
@@ -174,67 +175,57 @@ class _ScanningView extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Expanded(
-          child: Container(
-            margin: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.black87,
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                // Имитация видеопотока
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: Container(
-                    color: Colors.black54,
-                    child: CustomPaint(
-                      painter: _GridPainter(),
-                      size: Size.infinite,
-                    ),
-                  ),
-                ),
-                // Пульсирующий индикатор сканирования
-                ScaleTransition(
-                  scale: pulseAnimation,
-                  child: Container(
-                    width: 180,
-                    height: 180,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: AppTheme.secondary.withValues(alpha: 0.7),
-                        width: 2,
-                      ),
-                    ),
-                    child: Center(
+          Expanded(
+            child: Container(
+              margin: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: CameraPreviewWidget(
+                overlays: [
+                  // Пульсирующий индикатор сканирования
+                  Center(
+                    child: ScaleTransition(
+                      scale: pulseAnimation,
                       child: Container(
-                        width: 100,
-                        height: 100,
+                        width: 180,
+                        height: 180,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: AppTheme.secondary.withValues(alpha: 0.2),
                           border: Border.all(
-                            color: AppTheme.secondary,
-                            width: 3,
+                            color: AppTheme.secondary.withValues(alpha: 0.7),
+                            width: 2,
                           ),
                         ),
-                        child: const Icon(
-                          Icons.radar,
-                          color: AppTheme.secondary,
-                          size: 48,
+                        child: Center(
+                          child: Container(
+                            width: 100,
+                            height: 100,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppTheme.secondary.withValues(alpha: 0.2),
+                              border: Border.all(
+                                color: AppTheme.secondary,
+                                width: 3,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.radar,
+                              color: AppTheme.secondary,
+                              size: 48,
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                // Угловые маркеры
-                ..._buildCornerMarkers(),
-              ],
+                  // Угловые маркеры
+                  ..._buildCornerMarkers(),
+                ],
+              ),
             ),
           ),
-        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
           child: Column(
@@ -370,24 +361,6 @@ class _CornerPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.05)
-      ..strokeWidth = 1;
-    const step = 40.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
 
 class _PlanView extends StatelessWidget {
   final VoidCallback onRescan;
