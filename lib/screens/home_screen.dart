@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'floor_plan_screen.dart';
+import 'history_screen.dart';
 import 'object_recognition_screen.dart';
+import '../services/app_state.dart';
 import '../theme/app_theme.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -14,10 +16,11 @@ class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
 
   List<Widget> get _screens => [
-    _DashboardTab(onNavigate: (i) => setState(() => _selectedIndex = i)),
-    const FloorPlanScreen(),
-    const ObjectRecognitionScreen(),
-  ];
+        _DashboardTab(onNavigate: (i) => setState(() => _selectedIndex = i)),
+        const FloorPlanScreen(),
+        const ObjectRecognitionScreen(),
+        const HistoryScreen(),
+      ];
 
   @override
   Widget build(BuildContext context) {
@@ -47,6 +50,11 @@ class _HomeScreenState extends State<HomeScreen> {
             selectedIcon: Icon(Icons.camera_alt),
             label: 'Предметы',
           ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
+            label: 'История',
+          ),
         ],
       ),
     );
@@ -60,6 +68,8 @@ class _DashboardTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppStateScope.of(context);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Wardrobe'),
@@ -89,7 +99,8 @@ class _DashboardTab extends StatelessWidget {
               _FeatureCard(
                 icon: Icons.map,
                 title: 'План квартиры',
-                description: 'Сканируйте комнату камерой телефона и получите точный план с размерами',
+                description:
+                    'Сканируйте комнату камерой телефона и получите точный план с размерами',
                 color: const Color(0xFF2D4A3E),
                 onTap: () => onNavigate(1),
               ),
@@ -97,24 +108,35 @@ class _DashboardTab extends StatelessWidget {
               _FeatureCard(
                 icon: Icons.camera_alt,
                 title: 'Распознавание предметов',
-                description: 'Наведите камеру на предмет — приложение определит что это и добавит в каталог',
+                description:
+                    'Наведите камеру на предмет — приложение определит что это и добавит в каталог',
                 color: const Color(0xFF1A3A5C),
                 onTap: () => onNavigate(2),
               ),
               const SizedBox(height: 32),
-              Text(
-                'Статистика',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimary,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Статистика',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textPrimary,
+                        ),
+                  ),
+                  if (state.itemsRecognized > 0 || state.roomsScanned > 0)
+                    TextButton(
+                      onPressed: () => onNavigate(3),
+                      child: const Text('История →'),
                     ),
+                ],
               ),
               const SizedBox(height: 16),
               Row(
                 children: [
                   Expanded(
                     child: _StatCard(
-                      value: '0',
+                      value: state.roomsScanned.toString(),
                       label: 'Комнат\nотсканировано',
                       icon: Icons.meeting_room_outlined,
                     ),
@@ -122,7 +144,7 @@ class _DashboardTab extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: _StatCard(
-                      value: '0',
+                      value: state.itemsRecognized.toString(),
                       label: 'Предметов\nраспознано',
                       icon: Icons.category_outlined,
                     ),
@@ -205,7 +227,8 @@ class _FeatureCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Icon(Icons.arrow_forward_ios, color: Colors.white.withValues(alpha: 0.7), size: 16),
+            Icon(Icons.arrow_forward_ios,
+                color: Colors.white.withValues(alpha: 0.7), size: 16),
           ],
         ),
       ),
