@@ -1,6 +1,12 @@
+import 'dart:io';
+
+import 'package:arkit_plugin/arkit_plugin.dart';
 import 'package:flutter/material.dart';
+import 'package:vector_math/vector_math_64.dart' as vector;
+
+import '../services/app_state.dart';
+import '../services/ar_scan_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/camera_preview_widget.dart';
 
 class FloorPlanScreen extends StatefulWidget {
   const FloorPlanScreen({super.key});
@@ -9,56 +15,50 @@ class FloorPlanScreen extends StatefulWidget {
   State<FloorPlanScreen> createState() => _FloorPlanScreenState();
 }
 
-class _FloorPlanScreenState extends State<FloorPlanScreen>
-    with SingleTickerProviderStateMixin {
-  bool _isScanning = false;
+class _FloorPlanScreenState extends State<FloorPlanScreen> {
+  final ArScanService _scanService = ArScanService();
   bool _hasPlan = false;
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
 
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
-    _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
+    _scanService.addListener(_onScanUpdate);
+  }
+
+  void _onScanUpdate() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _pulseController.dispose();
+    _scanService.removeListener(_onScanUpdate);
+    _scanService.dispose();
     super.dispose();
   }
 
   void _startScan() {
-    setState(() {
-      _isScanning = true;
-      _hasPlan = false;
-    });
-    // Имитация сканирования (заглушка)
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() {
-          _isScanning = false;
-          _hasPlan = true;
-        });
-      }
-    });
+    setState(() => _hasPlan = false);
+    _scanService.startScan();
+  }
+
+  Future<void> _stopScan() async {
+    _scanService.stopScan();
+    final result = _scanService.buildResult();
+    if (result.planes.isNotEmpty && mounted) {
+      await AppStateScope.of(context).onScanFinished(result);
+      setState(() => _hasPlan = true);
+    }
   }
 
   void _resetScan() {
-    setState(() {
-      _hasPlan = false;
-      _isScanning = false;
-    });
+    _scanService.reset();
+    setState(() => _hasPlan = false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final isScanning = _scanService.isScanning;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('План квартиры'),
@@ -69,16 +69,31 @@ class _FloorPlanScreenState extends State<FloorPlanScreen>
               tooltip: 'Поделиться',
               onPressed: () => _showSnackBar(context, 'Экспорт плана (в разработке)'),
             ),
+          if (isScanning)
+            IconButton(
+              icon: const Icon(Icons.stop_circle_outlined),
+              tooltip: 'Завершить сканирование',
+              onPressed: _stopScan,
+            ),
         ],
       ),
       body: SafeArea(
-        child: _isScanning
-            ? _ScanningView(pulseAnimation: _pulseAnimation)
-            : _hasPlan
-                ? _PlanView(onRescan: _resetScan)
-                : _EmptyView(onStart: _startScan),
+        child: _buildBody(isScanning),
       ),
     );
+  }
+
+  Widget _buildBody(bool isScanning) {
+    if (_hasPlan) {
+      return _PlanView(
+        scanService: _scanService,
+        onRescan: _resetScan,
+      );
+    }
+    if (isScanning) {
+      return _ScanningView(scanService: _scanService, onStop: _stopScan);
+    }
+    return _EmptyView(onStart: _startScan);
   }
 
   void _showSnackBar(BuildContext context, String message) {
@@ -87,6 +102,8 @@ class _FloorPlanScreenState extends State<FloorPlanScreen>
     );
   }
 }
+
+// ── Пустой экран ─────────────────────────────────────────────────────────────
 
 class _EmptyView extends StatelessWidget {
   final VoidCallback onStart;
@@ -107,11 +124,7 @@ class _EmptyView extends StatelessWidget {
               color: AppTheme.secondary.withValues(alpha: 0.15),
               shape: BoxShape.circle,
             ),
-            child: const Icon(
-              Icons.map_outlined,
-              size: 56,
-              color: AppTheme.primary,
-            ),
+            child: const Icon(Icons.map_outlined, size: 56, color: AppTheme.primary),
           ),
           const SizedBox(height: 32),
           Text(
@@ -124,7 +137,9 @@ class _EmptyView extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Направьте камеру на комнату и медленно обведите\nпространство вокруг. Приложение создаст\nточный 2D-план с размерами.',
+            'Направьте камеру на комнату и медленно обведите\n'
+            'пространство. Приложение обнаружит поверхности\n'
+            'и построит план.',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: AppTheme.textSecondary,
                   height: 1.6,
@@ -132,28 +147,54 @@ class _EmptyView extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.amber.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.info_outline, color: Colors.amber, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Лучший результат: iPhone с LiDAR (12 Pro+)\nили Android с ToF-сенсором',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.amber.shade800,
-                        ),
+          if (Platform.isIOS) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, color: Colors.green, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'ARKit активен. Лучший результат на iPhone с LiDAR (12 Pro+)',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.green.shade700,
+                          ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Colors.amber, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'ARCore (Android): функция в разработке. '
+                      'Доступно на устройствах с поддержкой ARCore.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.amber.shade800,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 40),
           ElevatedButton.icon(
             onPressed: onStart,
@@ -166,92 +207,174 @@ class _EmptyView extends StatelessWidget {
   }
 }
 
-class _ScanningView extends StatelessWidget {
-  final Animation<double> pulseAnimation;
+// ── Экран сканирования ────────────────────────────────────────────────────────
 
-  const _ScanningView({required this.pulseAnimation});
+class _ScanningView extends StatefulWidget {
+  final ArScanService scanService;
+  final VoidCallback onStop;
+
+  const _ScanningView({required this.scanService, required this.onStop});
+
+  @override
+  State<_ScanningView> createState() => _ScanningViewState();
+}
+
+class _ScanningViewState extends State<_ScanningView>
+    with SingleTickerProviderStateMixin {
+  ARKitController? _arkitController;
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _arkitController?.dispose();
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  void _onARKitViewCreated(ARKitController controller) {
+    _arkitController = controller;
+
+    // Слушаем обнаружение плоскостей
+    controller.onAddNodeForAnchor = _onAnchorAdded;
+    controller.onUpdateNodeForAnchor = _onAnchorUpdated;
+    controller.onDidRemoveNodeForAnchor = _onAnchorRemoved;
+  }
+
+  void _onAnchorAdded(ARKitAnchor anchor) {
+    if (anchor is ARKitPlaneAnchor) {
+      _updatePlane(anchor);
+      _addPlaneVisualization(anchor);
+    }
+  }
+
+  void _onAnchorUpdated(ARKitAnchor anchor) {
+    if (anchor is ARKitPlaneAnchor) {
+      _updatePlane(anchor);
+      _arkitController?.remove(anchor.identifier);
+      _addPlaneVisualization(anchor);
+    }
+  }
+
+  void _onAnchorRemoved(ARKitAnchor anchor) {
+    widget.scanService.removePlane(anchor.identifier);
+  }
+
+  /// Определяем тип плоскости по Y-компоненте нормали из матрицы трансформации.
+  /// Горизонтальная плоскость: нормаль смотрит вверх (Y~1).
+  PlaneType _planeType(ARKitPlaneAnchor anchor) {
+    // Нормаль плоскости — столбец Y матрицы (индексы [1], [5], [9])
+    final m = anchor.transform.storage;
+    final normalY = m[5].abs(); // Y-компонента вектора вверх
+    return normalY > 0.7 ? PlaneType.horizontal : PlaneType.vertical;
+  }
+
+  void _updatePlane(ARKitPlaneAnchor anchor) {
+    final plane = DetectedPlane(
+      id: anchor.identifier,
+      type: _planeType(anchor),
+      center: vector.Vector3(
+        anchor.center.x.toDouble(),
+        anchor.center.y.toDouble(),
+        anchor.center.z.toDouble(),
+      ),
+      extent: vector.Vector2(
+        anchor.extent.x.toDouble(),
+        anchor.extent.z.toDouble(),
+      ),
+    );
+    widget.scanService.updatePlane(plane);
+  }
+
+  void _addPlaneVisualization(ARKitPlaneAnchor anchor) {
+    final isHorizontal = _planeType(anchor) == PlaneType.horizontal;
+
+    final material = ARKitMaterial(
+      diffuse: ARKitMaterialProperty.color(
+        isHorizontal
+            ? AppTheme.secondary.withValues(alpha: 0.35)
+            : AppTheme.primary.withValues(alpha: 0.25),
+      ),
+      doubleSided: true,
+    );
+
+    final plane = ARKitPlane(
+      width: anchor.extent.x,
+      height: anchor.extent.z,
+      materials: [material],
+    );
+
+    final node = ARKitNode(
+      name: anchor.identifier,
+      geometry: plane,
+      position: vector.Vector3(
+        anchor.center.x.toDouble(),
+        anchor.center.y.toDouble(),
+        anchor.center.z.toDouble(),
+      ),
+      eulerAngles: isHorizontal
+          ? vector.Vector3(-1.5708, 0, 0) // -90° по X для горизонтальной плоскости
+          : vector.Vector3(0, 0, 0),
+    );
+
+    _arkitController?.add(node, parentNodeName: anchor.identifier);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final planes = widget.scanService.planes;
+    final horizontalCount =
+        planes.where((p) => p.type == PlaneType.horizontal).length;
+    final verticalCount =
+        planes.where((p) => p.type == PlaneType.vertical).length;
+
     return Column(
       children: [
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: CameraPreviewWidget(
-                overlays: [
-                  // Пульсирующий индикатор сканирования
-                  Center(
-                    child: ScaleTransition(
-                      scale: pulseAnimation,
-                      child: Container(
-                        width: 180,
-                        height: 180,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: AppTheme.secondary.withValues(alpha: 0.7),
-                            width: 2,
-                          ),
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: 100,
-                            height: 100,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppTheme.secondary.withValues(alpha: 0.2),
-                              border: Border.all(
-                                color: AppTheme.secondary,
-                                width: 3,
-                              ),
-                            ),
-                            child: const Icon(
-                              Icons.radar,
-                              color: AppTheme.secondary,
-                              size: 48,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  // Угловые маркеры
-                  ..._buildCornerMarkers(),
-                ],
-              ),
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-          child: Column(
+        Expanded(
+          child: Stack(
             children: [
-              const LinearProgressIndicator(
-                backgroundColor: Colors.white24,
-                color: AppTheme.secondary,
+              // ARKit-вид (только iOS) или заглушка
+              if (Platform.isIOS)
+                ARKitSceneView(
+                  onARKitViewCreated: _onARKitViewCreated,
+                  planeDetection: ARPlaneDetection.horizontalAndVertical,
+                  showFeaturePoints: true,
+                  showWorldOrigin: false,
+                )
+              else
+                _AndroidFallback(pulseAnimation: _pulseAnimation),
+
+              // Оверлей со статистикой обнаружения
+              Positioned(
+                top: 16,
+                left: 16,
+                right: 16,
+                child: _ScanStats(
+                  horizontal: horizontalCount,
+                  vertical: verticalCount,
+                ),
               ),
-              const SizedBox(height: 16),
-              Text(
-                'Сканирование...',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: AppTheme.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Медленно обводите камерой комнату по периметру',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.textSecondary,
-                    ),
-                textAlign: TextAlign.center,
-              ),
+
+              // Угловые маркеры для iOS
+              if (Platform.isIOS) ..._buildCornerMarkers(),
             ],
           ),
+        ),
+        _ScanningFooter(
+          planesCount: planes.length,
+          onStop: widget.onStop,
         ),
       ],
     );
@@ -262,25 +385,426 @@ class _ScanningView extends StatelessWidget {
     const size = 24.0;
     const width = 3.0;
     return [
-      Positioned(
-        top: 20, left: 20,
-        child: _CornerMark(color: color, size: size, strokeWidth: width, topLeft: true),
-      ),
-      Positioned(
-        top: 20, right: 20,
-        child: _CornerMark(color: color, size: size, strokeWidth: width, topRight: true),
-      ),
-      Positioned(
-        bottom: 20, left: 20,
-        child: _CornerMark(color: color, size: size, strokeWidth: width, bottomLeft: true),
-      ),
-      Positioned(
-        bottom: 20, right: 20,
-        child: _CornerMark(color: color, size: size, strokeWidth: width, bottomRight: true),
-      ),
+      Positioned(top: 20, left: 20, child: _CornerMark(color: color, size: size, strokeWidth: width, topLeft: true)),
+      Positioned(top: 20, right: 20, child: _CornerMark(color: color, size: size, strokeWidth: width, topRight: true)),
+      Positioned(bottom: 20, left: 20, child: _CornerMark(color: color, size: size, strokeWidth: width, bottomLeft: true)),
+      Positioned(bottom: 20, right: 20, child: _CornerMark(color: color, size: size, strokeWidth: width, bottomRight: true)),
     ];
   }
 }
+
+class _ScanStats extends StatelessWidget {
+  final int horizontal;
+  final int vertical;
+
+  const _ScanStats({required this.horizontal, required this.vertical});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.radar, color: AppTheme.secondary, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            'Полов: $horizontal  |  Стен: $vertical',
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScanningFooter extends StatelessWidget {
+  final int planesCount;
+  final VoidCallback onStop;
+
+  const _ScanningFooter({required this.planesCount, required this.onStop});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+      child: Column(
+        children: [
+          const LinearProgressIndicator(
+            backgroundColor: Colors.white24,
+            color: AppTheme.secondary,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            planesCount == 0
+                ? 'Медленно обводите камерой комнату по периметру'
+                : 'Обнаружено поверхностей: $planesCount. Продолжайте...',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: planesCount > 0 ? onStop : null,
+            icon: const Icon(Icons.check, size: 18),
+            label: const Text('Завершить'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Android-заглушка ──────────────────────────────────────────────────────────
+
+class _AndroidFallback extends StatelessWidget {
+  final Animation<double> pulseAnimation;
+
+  const _AndroidFallback({required this.pulseAnimation});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black87,
+      child: Center(
+        child: ScaleTransition(
+          scale: pulseAnimation,
+          child: Container(
+            width: 180,
+            height: 180,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: AppTheme.secondary.withValues(alpha: 0.7),
+                width: 2,
+              ),
+            ),
+            child: Center(
+              child: Container(
+                width: 100,
+                height: 100,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.secondary.withValues(alpha: 0.2),
+                  border: Border.all(color: AppTheme.secondary, width: 3),
+                ),
+                child: const Icon(Icons.radar, color: AppTheme.secondary, size: 48),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Экран результатов ─────────────────────────────────────────────────────────
+
+class _PlanView extends StatelessWidget {
+  final ArScanService scanService;
+  final VoidCallback onRescan;
+
+  const _PlanView({required this.scanService, required this.onRescan});
+
+  @override
+  Widget build(BuildContext context) {
+    final result = scanService.buildResult();
+    final horizontal =
+        result.planes.where((p) => p.type == PlaneType.horizontal).toList();
+    final vertical =
+        result.planes.where((p) => p.type == PlaneType.vertical).toList();
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Превью плана (CustomPainter — схематичное)
+          Container(
+            height: 260,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: CustomPaint(
+                painter: _FloorPlanPainter(
+                  horizontal: horizontal,
+                  vertical: vertical,
+                ),
+                size: Size.infinite,
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Результаты сканирования',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textPrimary,
+                ),
+          ),
+          const SizedBox(height: 12),
+          // Статистика по плоскостям
+          ...horizontal.asMap().entries.map((e) => _PlaneCard(
+                name: 'Горизонтальная поверхность ${e.key + 1}',
+                icon: Icons.crop_landscape,
+                extent: e.value.extent,
+              )),
+          ...vertical.asMap().entries.map((e) => _PlaneCard(
+                name: 'Стена ${e.key + 1}',
+                icon: Icons.crop_portrait,
+                extent: e.value.extent,
+              )),
+          const SizedBox(height: 20),
+          // Итоговые цифры
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _TotalStat(
+                  'Площадь пола',
+                  '${result.totalFloorArea.toStringAsFixed(1)} м²',
+                ),
+                _VertDivider(),
+                _TotalStat('Поверхностей', '${result.planes.length}'),
+                _VertDivider(),
+                _TotalStat('Стен', '${vertical.length}'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onRescan,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Пересканировать'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppTheme.primary),
+                    foregroundColor: AppTheme.primary,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {},
+                  icon: const Icon(Icons.download),
+                  label: const Text('Сохранить'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlaneCard extends StatelessWidget {
+  final String name;
+  final IconData icon;
+  final vector.Vector2 extent;
+
+  const _PlaneCard({
+    required this.name,
+    required this.icon,
+    required this.extent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final area = extent.x * extent.y;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppTheme.secondary.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: AppTheme.primary, size: 20),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary)),
+                Text(
+                  '${extent.x.toStringAsFixed(2)} × ${extent.y.toStringAsFixed(2)} м',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            '${area.toStringAsFixed(1)} м²',
+            style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: AppTheme.primary,
+                fontSize: 15),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VertDivider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) =>
+      Container(width: 1, height: 40, color: AppTheme.primary.withValues(alpha: 0.2));
+}
+
+class _TotalStat extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _TotalStat(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(value,
+            style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.primary)),
+        const SizedBox(height: 2),
+        Text(label,
+            style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+      ],
+    );
+  }
+}
+
+// ── CustomPainter для схемы плана ─────────────────────────────────────────────
+
+class _FloorPlanPainter extends CustomPainter {
+  final List<DetectedPlane> horizontal;
+  final List<DetectedPlane> vertical;
+
+  const _FloorPlanPainter({required this.horizontal, required this.vertical});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final wallPaint = Paint()
+      ..color = AppTheme.primary
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.square
+      ..style = PaintingStyle.stroke;
+
+    final fillPaint = Paint()
+      ..color = AppTheme.secondary.withValues(alpha: 0.1)
+      ..style = PaintingStyle.fill;
+
+    const p = 32.0;
+    final w = size.width;
+    final h = size.height;
+
+    if (horizontal.isEmpty) {
+      // Ещё нет данных — рисуем placeholder
+      _drawPlaceholder(canvas, size);
+      return;
+    }
+
+    // Нормализуем плоскости в пространство canvas
+    double maxExtent = horizontal.fold(
+      0.0,
+      (m, pl) => m < pl.extent.x ? pl.extent.x : m,
+    );
+    if (maxExtent == 0) maxExtent = 5.0;
+    final scale = (w - 2 * p) / maxExtent;
+
+    double offsetY = p;
+    for (final plane in horizontal) {
+      final pw = plane.extent.x * scale;
+      final ph = plane.extent.y * scale;
+      final rect = Rect.fromLTWH(p, offsetY, pw, ph.clamp(40.0, h - 2 * p));
+      canvas.drawRect(rect, fillPaint);
+      canvas.drawRect(rect, wallPaint);
+      offsetY += rect.height + 12;
+      if (offsetY > h - p) break;
+    }
+  }
+
+  void _drawPlaceholder(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.grey.shade200
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(Rect.fromLTWH(32, 32, size.width - 64, size.height - 64), paint);
+
+    final textPainter = TextPainter(
+      text: const TextSpan(
+        text: 'Нет данных сканирования',
+        style: TextStyle(color: Colors.grey, fontSize: 13),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    textPainter.paint(
+      canvas,
+      Offset(
+        (size.width - textPainter.width) / 2,
+        (size.height - textPainter.height) / 2,
+      ),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FloorPlanPainter old) =>
+      old.horizontal.length != horizontal.length ||
+      old.vertical.length != vertical.length;
+}
+
+// ── CornerMark ────────────────────────────────────────────────────────────────
 
 class _CornerMark extends StatelessWidget {
   final Color color;
@@ -340,322 +864,21 @@ class _CornerPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     if (topLeft) {
-      canvas.drawLine(Offset(0, size.height), Offset(0, 0), paint);
-      canvas.drawLine(Offset(0, 0), Offset(size.width, 0), paint);
+      canvas.drawLine(Offset(0, size.height), const Offset(0, 0), paint);
+      canvas.drawLine(const Offset(0, 0), Offset(size.width, 0), paint);
     }
     if (topRight) {
       canvas.drawLine(Offset(size.width, size.height), Offset(size.width, 0), paint);
-      canvas.drawLine(Offset(size.width, 0), Offset(0, 0), paint);
+      canvas.drawLine(Offset(size.width, 0), const Offset(0, 0), paint);
     }
     if (bottomLeft) {
-      canvas.drawLine(Offset(0, 0), Offset(0, size.height), paint);
+      canvas.drawLine(const Offset(0, 0), Offset(0, size.height), paint);
       canvas.drawLine(Offset(0, size.height), Offset(size.width, size.height), paint);
     }
     if (bottomRight) {
       canvas.drawLine(Offset(size.width, 0), Offset(size.width, size.height), paint);
       canvas.drawLine(Offset(size.width, size.height), Offset(0, size.height), paint);
     }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-
-class _PlanView extends StatelessWidget {
-  final VoidCallback onRescan;
-
-  const _PlanView({required this.onRescan});
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Превью плана
-          Container(
-            height: 300,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 16,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: CustomPaint(
-                painter: _FloorPlanPainter(),
-                size: Size.infinite,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Результаты сканирования',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textPrimary,
-                ),
-          ),
-          const SizedBox(height: 12),
-          _RoomInfo(
-            rooms: const [
-              _RoomData('Гостиная', '5.2 м × 4.1 м', '21.3 м²', Icons.weekend),
-              _RoomData('Спальня', '3.8 м × 3.2 м', '12.2 м²', Icons.bed),
-              _RoomData('Кухня', '3.5 м × 2.8 м', '9.8 м²', Icons.kitchen),
-              _RoomData('Ванная', '2.1 м × 1.8 м', '3.8 м²', Icons.bathtub),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.primary.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _TotalStat('Общая площадь', '47.1 м²'),
-                _VertDivider(),
-                _TotalStat('Комнат', '4'),
-                _VertDivider(),
-                _TotalStat('Точность', '±2 см'),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onRescan,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Пересканировать'),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: const BorderSide(color: AppTheme.primary),
-                    foregroundColor: AppTheme.primary,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.download),
-                  label: const Text('Сохранить'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _VertDivider extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(width: 1, height: 40, color: AppTheme.primary.withValues(alpha: 0.2));
-  }
-}
-
-class _TotalStat extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _TotalStat(this.label, this.value);
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: AppTheme.primary,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-        ),
-      ],
-    );
-  }
-}
-
-class _RoomData {
-  final String name;
-  final String dimensions;
-  final String area;
-  final IconData icon;
-
-  const _RoomData(this.name, this.dimensions, this.area, this.icon);
-}
-
-class _RoomInfo extends StatelessWidget {
-  final List<_RoomData> rooms;
-
-  const _RoomInfo({required this.rooms});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: rooms.map((room) {
-        return Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.04),
-                blurRadius: 6,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppTheme.secondary.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(room.icon, color: AppTheme.primary, size: 20),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      room.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimary,
-                      ),
-                    ),
-                    Text(
-                      room.dimensions,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Text(
-                room.area,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.primary,
-                  fontSize: 15,
-                ),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
-    );
-  }
-}
-
-class _FloorPlanPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final wallPaint = Paint()
-      ..color = AppTheme.primary
-      ..strokeWidth = 6
-      ..strokeCap = StrokeCap.square
-      ..style = PaintingStyle.stroke;
-
-    final roomFill = Paint()
-      ..color = AppTheme.secondary.withValues(alpha: 0.08)
-      ..style = PaintingStyle.fill;
-
-    final doorPaint = Paint()
-      ..color = Colors.brown.shade300
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    final textPainter = TextPainter(textDirection: TextDirection.ltr);
-
-    final w = size.width;
-    final h = size.height;
-    const p = 30.0; // padding
-
-    // Общий контур квартиры
-    final outline = Rect.fromLTRB(p, p, w - p, h - p);
-    canvas.drawRect(outline, roomFill);
-    canvas.drawRect(outline, wallPaint);
-
-    // Внутренние стены
-    // Вертикальная стена делящая гостиную и коридор/спальню
-    final midX = p + (w - 2 * p) * 0.55;
-    canvas.drawLine(Offset(midX, p), Offset(midX, h - p), wallPaint);
-
-    // Горизонтальная стена (кухня/ванная внизу справа)
-    final midY = p + (h - 2 * p) * 0.55;
-    canvas.drawLine(Offset(midX, midY), Offset(w - p, midY), wallPaint);
-
-    // Горизонтальная стена (спальня от коридора)
-    final topMidY = p + (h - 2 * p) * 0.45;
-    canvas.drawLine(Offset(midX, p), Offset(midX, topMidY), wallPaint);
-
-    // Подписи комнат
-    void drawLabel(String text, Offset center) {
-      textPainter
-        ..text = TextSpan(
-          text: text,
-          style: TextStyle(
-            color: AppTheme.primary.withValues(alpha: 0.7),
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-          ),
-        )
-        ..layout();
-      textPainter.paint(
-        canvas,
-        center - Offset(textPainter.width / 2, textPainter.height / 2),
-      );
-    }
-
-    drawLabel('Гостиная', Offset((p + midX) / 2, (p + h - p) / 2));
-    drawLabel('Спальня', Offset((midX + w - p) / 2, (p + midY) / 2));
-    drawLabel('Кухня', Offset((midX + w - p) / 2, (midY + h - p) / 2 - 10));
-    drawLabel('Ванная', Offset((midX + w - p) / 2, (midY + h - p) / 2 + 14));
-
-    // Дверные проёмы (простые дуги)
-    canvas.drawArc(
-      Rect.fromCenter(center: Offset(p + 40, p + 40), width: 40, height: 40),
-      0, 1.5708, false, doorPaint,
-    );
   }
 
   @override
