@@ -410,6 +410,39 @@ mlkit.InputImage? _toInputImageAndroid(CameraImage image, rotation) {
 
 iOS (`BGRA8888`) — один плейн, padding нет — старый код оставлен без изменений.
 
+### Баг 3 — `IllegalStateException: Context is not an Activity` при запуске ARCore (`e7c056d`)
+
+**Симптом:** при открытии экрана сканирования на Android приложение падало или ARCore не инициализировался с ошибкой `Context is not an Activity`.
+
+**Причина:** в `ArCoreView.kt` был метод `requireActivity()`, который пытался скастить `context` к `Activity`:
+
+```kotlin
+private fun requireActivity(): Activity {
+    return (context as? Activity)
+        ?: throw IllegalStateException("Context is not an Activity")
+}
+```
+
+Этот каст всегда завершается неудачей. Flutter передаёт `PlatformView` не сам `Activity`, а `MutableContextWrapper` — специальную обёртку контекста. Она делегирует часть методов к `Activity` внутри, но `context instanceof Activity` возвращает `false`. Это стандартное поведение Flutter PlatformView на Android, не баг фреймворка.
+
+`ArCoreApk.requestInstall()` требует именно `Activity` (не просто `Context`) для показа диалога установки ARCore — поэтому обойти каст было нельзя.
+
+**Исправление:** `Activity` передаётся явно по цепочке при регистрации фабрики:
+
+```
+MainActivity (this: Activity)
+  └─► ArCorePlugin(messenger, activity = this)
+        └─► ArCoreView(context, messenger, viewId, activity)
+              └─► ArCoreApk.requestInstall(activity, ...)  ✅
+```
+
+- `ArCorePlugin` получил параметр `activity: Activity` в конструкторе
+- `ArCoreView` получил параметр `activity: Activity`, использует его вместо `requireActivity()`
+- `MainActivity.configureFlutterEngine` передаёт `this` как `Activity`
+- Метод `requireActivity()` удалён
+
+`MainActivity` наследует `FlutterActivity extends Activity`, поэтому `this` всегда является корректным `Activity`.
+
 ---
 
 ## Все пункты плана выполнены
