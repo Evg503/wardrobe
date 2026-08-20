@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
@@ -7,7 +8,6 @@ import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart
     as mlkit;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 
 /// Режим работы детектора.
 enum DetectorMode {
@@ -181,25 +181,80 @@ class ObjectDetectionService extends ChangeNotifier {
     int sensorOrientation,
     CameraLensDirection lensDirection,
   ) {
+    final rotation = _sensorToRotation(sensorOrientation, lensDirection);
+
+    // Android: camera плагин отдаёт YUV_420_888 (три отдельных плейна).
+    // ML Kit Custom Model требует NV21-совместимый буфер.
+    // Конкатенация всех плейнов через WriteBuffer создаёт неверный layout
+    // и вызывает IllegalArgumentException в нативном конвертере.
+    // Решение: конвертируем YUV_420_888 → NV21 вручную (Y + interleaved VU).
+    if (Platform.isAndroid) {
+      return _toInputImageAndroid(image, rotation);
+    }
+
+    // iOS: BGRA8888 — один плейн, прямая передача.
     final format = mlkit.InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
 
-    final rotation = _sensorToRotation(sensorOrientation, lensDirection);
-
-    final WriteBuffer allBytes = WriteBuffer();
-    for (final plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
-    final bytes = allBytes.done().buffer.asUint8List();
-
+    final bytes = image.planes.first.bytes;
     final metadata = mlkit.InputImageMetadata(
       size: Size(image.width.toDouble(), image.height.toDouble()),
       rotation: rotation,
       format: format,
       bytesPerRow: image.planes.first.bytesPerRow,
     );
-
     return mlkit.InputImage.fromBytes(bytes: bytes, metadata: metadata);
+  }
+
+  /// Конвертирует YUV_420_888 (Android) в NV21 для ML Kit.
+  ///
+  /// YUV_420_888 имеет три отдельных плейна: Y, U, V.
+  /// NV21 — Y-плейн подряд, затем чередующиеся V и U (VU interleaved).
+  mlkit.InputImage? _toInputImageAndroid(
+    CameraImage image,
+    mlkit.InputImageRotation rotation,
+  ) {
+    try {
+      final yPlane = image.planes[0];
+      final uPlane = image.planes[1];
+      final vPlane = image.planes[2];
+
+      final int width = image.width;
+      final int height = image.height;
+      final int uvRowStride = uPlane.bytesPerRow;
+      final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
+
+      // NV21: Y (width × height) + VU interleaved (width/2 × height/2 × 2)
+      final nv21 = Uint8List(width * height + (width ~/ 2) * (height ~/ 2) * 2);
+
+      // Копируем Y-плейн с учётом stride
+      int nv21Idx = 0;
+      for (int row = 0; row < height; row++) {
+        final rowStart = row * yPlane.bytesPerRow;
+        nv21.setRange(nv21Idx, nv21Idx + width, yPlane.bytes, rowStart);
+        nv21Idx += width;
+      }
+
+      // Копируем VU interleaved
+      for (int row = 0; row < height ~/ 2; row++) {
+        for (int col = 0; col < width ~/ 2; col++) {
+          final uvOffset = row * uvRowStride + col * uvPixelStride;
+          nv21[nv21Idx++] = vPlane.bytes[uvOffset]; // V
+          nv21[nv21Idx++] = uPlane.bytes[uvOffset]; // U
+        }
+      }
+
+      final metadata = mlkit.InputImageMetadata(
+        size: Size(width.toDouble(), height.toDouble()),
+        rotation: rotation,
+        format: mlkit.InputImageFormat.nv21,
+        bytesPerRow: width,
+      );
+      return mlkit.InputImage.fromBytes(bytes: nv21, metadata: metadata);
+    } catch (e) {
+      debugPrint('YUV→NV21 conversion error: $e');
+      return null;
+    }
   }
 
   mlkit.InputImageRotation _sensorToRotation(
