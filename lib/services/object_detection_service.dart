@@ -2,8 +2,22 @@ import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart'
     as mlkit;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+
+/// Режим работы детектора.
+enum DetectorMode {
+  /// Встроенная базовая модель ML Kit — быстрый запуск, широкие категории.
+  base,
+
+  /// Кастомная TFLite-модель EfficientDet-Lite0 (COCO 80 классов) —
+  /// конкретные предметы: chair, couch, bed, dining table, laptop, tv и др.
+  custom,
+}
 
 /// Результат распознавания одного объекта.
 class DetectedObject {
@@ -24,27 +38,95 @@ class DetectedObject {
 
 /// Сервис распознавания объектов через Google ML Kit.
 ///
-/// Использует встроенную базовую модель ML Kit (без кастомного tflite).
-/// Детектор работает в режиме [DetectionMode.single] — анализ по запросу.
+/// Поддерживает два режима через [DetectorMode]:
+/// - [DetectorMode.base] — встроенная модель ML Kit, ~5 категорий
+/// - [DetectorMode.custom] — EfficientDet-Lite0 (COCO 80 классов),
+///   конкретные предметы интерьера
+///
+/// Переключение режима через [switchMode] — пересоздаёт детектор.
 class ObjectDetectionService extends ChangeNotifier {
+  static const _modelAsset = 'assets/ml/furniture_detector.tflite';
+
   mlkit.ObjectDetector? _detector;
   bool _isProcessing = false;
   List<DetectedObject> _results = [];
   String? _errorMessage;
+  DetectorMode _mode = DetectorMode.custom;
+  bool _isInitialized = false;
 
   List<DetectedObject> get results => _results;
   bool get isProcessing => _isProcessing;
   String? get errorMessage => _errorMessage;
+  DetectorMode get mode => _mode;
+  bool get isInitialized => _isInitialized;
 
-  /// Инициализирует детектор ML Kit.
-  void initialize() {
-    final options = mlkit.ObjectDetectorOptions(
-      mode: mlkit.DetectionMode.single,
-      classifyObjects: true,
-      multipleObjects: true,
-    );
-    _detector = mlkit.ObjectDetector(options: options);
+  // ── Инициализация ────────────────────────────────────────────────────────
+
+  /// Инициализирует детектор в режиме [mode] (по умолчанию custom).
+  Future<void> initialize([DetectorMode mode = DetectorMode.custom]) async {
+    _mode = mode;
+    await _createDetector();
   }
+
+  /// Переключает режим и пересоздаёт детектор.
+  Future<void> switchMode(DetectorMode mode) async {
+    if (_mode == mode && _isInitialized) return;
+    _mode = mode;
+    _results = [];
+    _errorMessage = null;
+    _isInitialized = false;
+    notifyListeners();
+    await _createDetector();
+  }
+
+  Future<void> _createDetector() async {
+    _detector?.close();
+    _detector = null;
+
+    try {
+      if (_mode == DetectorMode.custom) {
+        final modelPath = await _copyAssetToLocal(_modelAsset);
+        final options = mlkit.LocalObjectDetectorOptions(
+          mode: mlkit.DetectionMode.stream,
+          modelPath: modelPath,
+          classifyObjects: true,
+          multipleObjects: true,
+          confidenceThreshold: 0.45,
+        );
+        _detector = mlkit.ObjectDetector(options: options);
+      } else {
+        final options = mlkit.ObjectDetectorOptions(
+          mode: mlkit.DetectionMode.stream,
+          classifyObjects: true,
+          multipleObjects: true,
+        );
+        _detector = mlkit.ObjectDetector(options: options);
+      }
+      _isInitialized = true;
+      _errorMessage = null;
+    } catch (e) {
+      _errorMessage = 'Ошибка инициализации детектора: $e';
+      debugPrint(_errorMessage);
+    }
+    notifyListeners();
+  }
+
+  /// Копирует asset во временную директорию (ML Kit требует путь к файлу).
+  Future<String> _copyAssetToLocal(String assetPath) async {
+    final dir = await getTemporaryDirectory();
+    final fileName = p.basename(assetPath);
+    final file = File(p.join(dir.path, fileName));
+
+    if (!await file.exists()) {
+      final data = await rootBundle.load(assetPath);
+      await file.writeAsBytes(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      );
+    }
+    return file.path;
+  }
+
+  // ── Обработка кадров ─────────────────────────────────────────────────────
 
   /// Анализирует кадр с камеры в потоке (imageStream).
   Future<void> processFrame(
@@ -74,7 +156,7 @@ class ObjectDetectionService extends ChangeNotifier {
     }
   }
 
-  /// Анализирует изображение из файла (например, после `takePicture`).
+  /// Анализирует изображение из файла.
   Future<List<DetectedObject>> processFile(String imagePath) async {
     if (_detector == null) return [];
     try {
@@ -92,7 +174,7 @@ class ObjectDetectionService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Приватные методы ────────────────────────────────────────────────────
+  // ── Приватные методы ─────────────────────────────────────────────────────
 
   mlkit.InputImage? _toInputImage(
     CameraImage image,
@@ -124,7 +206,6 @@ class ObjectDetectionService extends ChangeNotifier {
     int sensorOrientation,
     CameraLensDirection lensDirection,
   ) {
-    // Передняя камера на Android зеркалится — инвертируем поворот
     if (lensDirection == CameraLensDirection.front) {
       switch (sensorOrientation) {
         case 90:
@@ -182,53 +263,111 @@ class ObjectDetectionService extends ChangeNotifier {
 
   String _localizeLabel(String raw) {
     const map = {
-      'Sofa': 'Диван',
+      // Мебель
+      'chair': 'Стул',
+      'Chair': 'Стул',
+      'couch': 'Диван',
       'Couch': 'Диван',
-      'Chair': 'Кресло',
-      'Armchair': 'Кресло',
-      'Table': 'Стол',
-      'Coffee table': 'Журнальный стол',
-      'Dining table': 'Обеденный стол',
+      'Sofa': 'Диван',
+      'sofa': 'Диван',
+      'bed': 'Кровать',
       'Bed': 'Кровать',
+      'dining table': 'Обеденный стол',
+      'Dining table': 'Обеденный стол',
+      'Table': 'Стол',
+      'table': 'Стол',
+      'Coffee table': 'Журнальный стол',
+      'Armchair': 'Кресло',
       'Desk': 'Письменный стол',
-      'Shelf': 'Полка',
-      'Lamp': 'Лампа',
-      'Floor lamp': 'Торшер',
+      'desk': 'Письменный стол',
+      'bench': 'Скамья',
+      'Bench': 'Скамья',
       'Cabinet': 'Шкаф',
       'Wardrobe': 'Шкаф-купе',
       'Bookcase': 'Книжный шкаф',
       'Dresser': 'Комод',
+      'Shelf': 'Полка',
+      // Техника
+      'tv': 'Телевизор',
+      'TV': 'Телевизор',
+      'Television': 'Телевизор',
+      'laptop': 'Ноутбук',
+      'Laptop': 'Ноутбук',
+      'refrigerator': 'Холодильник',
+      'Refrigerator': 'Холодильник',
+      'oven': 'Духовка',
+      'Oven': 'Духовка',
+      'microwave': 'Микроволновка',
+      'Microwave': 'Микроволновка',
+      'toaster': 'Тостер',
+      'sink': 'Раковина',
+      'Sink': 'Раковина',
+      'toilet': 'Унитаз',
+      'Toilet': 'Унитаз',
+      'Washing machine': 'Стиральная машина',
+      'mouse': 'Мышь',
+      'keyboard': 'Клавиатура',
+      'cell phone': 'Телефон',
+      'remote': 'Пульт',
+      // Декор
+      'potted plant': 'Растение',
       'Plant': 'Растение',
       'Houseplant': 'Комнатное растение',
+      'vase': 'Ваза',
+      'Vase': 'Ваза',
+      'clock': 'Часы',
+      'Clock': 'Часы',
+      'book': 'Книга',
+      'Book': 'Книга',
       'Rug': 'Ковёр',
       'Carpet': 'Ковёр',
       'Picture frame': 'Картина',
       'Mirror': 'Зеркало',
-      'Television': 'Телевизор',
-      'TV': 'Телевизор',
-      'Computer': 'Компьютер',
-      'Laptop': 'Ноутбук',
-      'Refrigerator': 'Холодильник',
-      'Washing machine': 'Стиральная машина',
+      // Освещение
+      'Lamp': 'Лампа',
+      'Floor lamp': 'Торшер',
+      // Прочее
+      'person': 'Человек',
+      'Person': 'Человек',
       'Furniture': 'Мебель',
       'Home appliance': 'Бытовая техника',
-      'Person': 'Человек',
+      'scissors': 'Ножницы',
+      'bottle': 'Бутылка',
+      'cup': 'Чашка',
+      'bowl': 'Миска',
+      'teddy bear': 'Игрушка',
+      'backpack': 'Рюкзак',
+      'suitcase': 'Чемодан',
+      'umbrella': 'Зонт',
+      'handbag': 'Сумка',
     };
-    return map[raw] ?? raw;
+    return map[raw] ?? _capitalize(raw);
   }
+
+  String _capitalize(String s) =>
+      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
   String _categoryFromLabel(String raw) {
     const furniture = {
-      'Sofa', 'Couch', 'Chair', 'Armchair', 'Table',
-      'Coffee table', 'Dining table', 'Bed', 'Desk', 'Shelf',
-      'Cabinet', 'Wardrobe', 'Bookcase', 'Dresser', 'Furniture',
+      'chair', 'couch', 'bed', 'dining table', 'bench', 'desk',
+      'Sofa', 'Couch', 'Chair', 'Armchair', 'Table', 'Coffee table',
+      'Dining table', 'Bed', 'Desk', 'Shelf', 'Cabinet', 'Wardrobe',
+      'Bookcase', 'Dresser', 'Furniture',
     };
     const lighting = {'Lamp', 'Floor lamp'};
     const textile = {'Rug', 'Carpet'};
-    const decor = {'Picture frame', 'Mirror', 'Plant', 'Houseplant'};
-    const electronics = {'Television', 'TV', 'Computer', 'Laptop'};
+    const decor = {
+      'potted plant', 'vase', 'clock', 'book', 'teddy bear',
+      'Picture frame', 'Mirror', 'Plant', 'Houseplant', 'Vase',
+      'Clock', 'Book',
+    };
+    const electronics = {
+      'tv', 'laptop', 'mouse', 'keyboard', 'cell phone', 'remote',
+      'Television', 'TV', 'Laptop', 'Computer',
+    };
     const appliances = {
-      'Refrigerator', 'Washing machine', 'Home appliance',
+      'refrigerator', 'oven', 'microwave', 'toaster', 'sink', 'toilet',
+      'Refrigerator', 'Washing machine', 'Home appliance', 'Sink',
     };
 
     if (furniture.contains(raw)) return 'Мебель';

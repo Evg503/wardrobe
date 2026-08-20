@@ -196,8 +196,65 @@ android/app/src/main/kotlin/com/example/wardrobe/
 
 ---
 
+---
+
+### 9. Кастомная TFLite-модель для мебели
+
+**Модель:** EfficientDet-Lite0 (TFHub, COCO 80 классов, 4.4 МБ) — распознаёт конкретные предметы интерьера: `chair`, `couch`, `bed`, `dining table`, `laptop`, `tv`, `refrigerator`, `oven`, `microwave`, `sink`, `potted plant`, `vase`, `clock`, `book` и др.
+
+**Новые файлы:**
+- `assets/ml/furniture_detector.tflite` — EfficientDet-Lite0 с встроенными метаданными ML Kit
+- `assets/ml/furniture_labels.txt` — список COCO-классов для справки
+
+**Изменения:**
+- `pubspec.yaml` — добавлены `path: ^1.9.0`, регистрация assets (`assets/ml/`)
+- `lib/services/object_detection_service.dart`:
+  - Добавлен `enum DetectorMode { base, custom }`
+  - `initialize([DetectorMode])` и `switchMode(DetectorMode)` — переключение детектора на лету
+  - В режиме `custom`: `LocalObjectDetectorOptions` с `modelPath` (модель копируется из assets в `getTemporaryDirectory()` при первом запуске)
+  - В режиме `base`: прежний `ObjectDetectorOptions` (встроенная ML Kit модель)
+  - Расширен словарь локализации — охватывает все COCO-классы бытовых предметов (строчные `chair`, `couch`, `bed` и заглавные `Chair`, `Sofa` и т.д.)
+  - `confidenceThreshold: 0.45` для кастомной модели (вместо 0.4 на base)
+- `lib/screens/object_recognition_screen.dart`:
+  - По умолчанию запускается в режиме `DetectorMode.custom`
+  - Новый виджет `_ModelToggle` в AppBar — компактный чип «EfficientDet / Base» с переключением по тапу; при переключении поток останавливается, детектор пересоздаётся
+
+## Текущая структура проекта
+
+```
+lib/
+├── main.dart
+├── screens/
+│   ├── home_screen.dart
+│   ├── floor_plan_screen.dart         # AR-сканирование + экспорт PNG/PDF
+│   ├── object_recognition_screen.dart # ML Kit + EfficientDet-Lite0
+│   └── history_screen.dart
+├── services/
+│   ├── camera_service.dart
+│   ├── object_detection_service.dart  # Base + Custom TFLite режимы
+│   ├── export_service.dart
+│   ├── ar_scan_service.dart
+│   ├── app_state.dart
+│   └── app_storage.dart
+├── widgets/
+│   └── camera_preview_widget.dart
+└── theme/
+    └── app_theme.dart
+
+assets/
+└── ml/
+    ├── furniture_detector.tflite      # EfficientDet-Lite0 (COCO 80, 4.4 МБ)
+    └── furniture_labels.txt           # Список классов
+
+android/app/src/main/kotlin/com/example/wardrobe/
+├── MainActivity.kt
+├── ArCorePlugin.kt
+└── ArCoreView.kt
+```
+
+---
+
 ## Что планируется дальше
 
-- **Улучшение ML Kit** — кастомная TFLite-модель для мебели (обучить через Roboflow)
 - **Онбординг** — первый запуск с объяснением функций
 

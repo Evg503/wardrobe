@@ -39,7 +39,7 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
     _detectionService = ObjectDetectionService();
 
     _detectionService.addListener(_onDetectionUpdate);
-    _detectionService.initialize();
+    _detectionService.initialize(DetectorMode.custom);
     _cameraService.addListener(_onCameraUpdate);
     _cameraService.initialize();
   }
@@ -121,6 +121,14 @@ class _ObjectRecognitionScreenState extends State<ObjectRecognitionScreen>
       appBar: AppBar(
         title: const Text('Распознавание предметов'),
         actions: [
+          // Переключатель модели
+          _ModelToggle(
+            mode: _detectionService.mode,
+            onChanged: (mode) async {
+              if (_isStreaming) await _stopStream();
+              await _detectionService.switchMode(mode);
+            },
+          ),
           if (objects.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline),
@@ -596,5 +604,66 @@ class _ObjectTile extends StatelessWidget {
       default:
         return Icons.category_outlined;
     }
+  }
+}
+
+// ── Переключатель модели ──────────────────────────────────────────────────────
+
+class _ModelToggle extends StatelessWidget {
+  final DetectorMode mode;
+  final Future<void> Function(DetectorMode) onChanged;
+
+  const _ModelToggle({required this.mode, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final isCustom = mode == DetectorMode.custom;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+      child: Tooltip(
+        message: isCustom
+            ? 'Режим: EfficientDet-Lite (мебель)\nНажмите для базовой модели'
+            : 'Режим: базовая ML Kit\nНажмите для EfficientDet-Lite',
+        child: GestureDetector(
+          onTap: () => onChanged(
+            isCustom ? DetectorMode.base : DetectorMode.custom,
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: isCustom
+                  ? AppTheme.secondary.withValues(alpha: 0.15)
+                  : Colors.grey.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isCustom
+                    ? AppTheme.secondary.withValues(alpha: 0.5)
+                    : Colors.grey.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isCustom ? Icons.auto_awesome : Icons.smart_toy_outlined,
+                  size: 14,
+                  color: isCustom ? AppTheme.primary : Colors.grey.shade600,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  isCustom ? 'EfficientDet' : 'Base',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color:
+                        isCustom ? AppTheme.primary : Colors.grey.shade600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
