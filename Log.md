@@ -313,6 +313,105 @@ android/app/src/main/kotlin/com/example/wardrobe/
 
 ---
 
+---
+
+## Баги и их исправления
+
+### Баг 1 — сканирование заканчивается сразу после старта (`b1f4590`)
+
+**Симптом:** нажимаешь «Начать сканирование» на Android — экран мгновенно возвращается в начальное состояние, план не строится.
+
+**Причина:** цепочка событий при ошибке ARCore:
+
+1. `ArCoreView.kt` не может инициализировать сессию (устройство не поддерживает ARCore, ARCore не установлен, или `requestInstall` вернул `INSTALL_REQUESTED`) → вызывает `sendError(code, message)`
+2. `sendError` публикует событие с `code` в `EventChannel`
+3. В `ArScanService._onAndroidError` вызывается `setError(message)` → `_isScanning = false` + `notifyListeners()`
+4. `FloorPlanScreen._onScanUpdate` → `setState()` → `_buildBody` видит `isScanning == false` → рисует `_EmptyView`
+
+Никакого сообщения пользователю не выводилось. Ошибка проглатывалась молча.
+
+**Исправление:**
+
+- `_onScanUpdate` в `FloorPlanScreen` проверяет `_scanService.errorMessage` и показывает `SnackBar` через `WidgetsBinding.addPostFrameCallback` (прямой вызов из `setState` запрещён):
+
+```dart
+void _onScanUpdate() {
+  if (!mounted) return;
+  final err = _scanService.errorMessage;
+  if (err != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showSnackBar(context, err);
+    });
+  }
+  setState(() {});
+}
+```
+
+- `_EmptyView` получил необязательный параметр `errorMessage`; при наличии ошибки отображается красный баннер под описанием — виден сразу, не зависит от timing SnackBar.
+- `_buildBody` передаёт `_scanService.errorMessage` в `_EmptyView`.
+
+---
+
+### Баг 2 — `InputImageConverterError: IllegalArgumentException` при распознавании (`b1f4590`)
+
+**Симптом:** на Android при нажатии «Распознать» детектор выбрасывает исключение и не возвращает результатов. На iOS работает нормально.
+
+**Причина:** неправильная конвертация `CameraImage` в `InputImage` для ML Kit.
+
+Android камера отдаёт кадры в формате **YUV_420_888** — три отдельных плейна:
+- Плейн 0: Y (яркость), размер `width × height`, stride может быть > width
+- Плейн 1: U (Cb), размер `width/2 × height/2`, `pixelStride` обычно 2 (interleaved с V)
+- Плейн 2: V (Cr), размер `width/2 × height/2`, `pixelStride` обычно 2
+
+Старый код просто конкатенировал все три плейна через `WriteBuffer`:
+
+```dart
+// НЕПРАВИЛЬНО
+final WriteBuffer allBytes = WriteBuffer();
+for (final plane in image.planes) {
+  allBytes.putUint8List(plane.bytes);
+}
+```
+
+Это создавало буфер с неверным layout — Y‑плейн с padding-байтами (stride > width), затем U и V как отдельные массивы. ML Kit Custom Model (`LocalObjectDetectorOptions`) передаёт буфер в нативный конвертер, который ожидает **NV21** (Y без padding + чередующиеся VU байты) — отсюда `IllegalArgumentException`.
+
+Встроенная base-модель (`ObjectDetectorOptions`) менее строга к формату, поэтому баг проявился только после переключения на кастомную TFLite-модель.
+
+**Исправление:** ручная конвертация YUV_420_888 → NV21 в `_toInputImageAndroid()`:
+
+```dart
+mlkit.InputImage? _toInputImageAndroid(CameraImage image, rotation) {
+  final yPlane = image.planes[0];
+  final uPlane = image.planes[1];
+  final vPlane = image.planes[2];
+
+  final nv21 = Uint8List(width * height + (width ~/ 2) * (height ~/ 2) * 2);
+
+  // Y-плейн: копируем построчно, убирая padding (stride может быть > width)
+  int idx = 0;
+  for (int row = 0; row < height; row++) {
+    nv21.setRange(idx, idx + width, yPlane.bytes, row * yPlane.bytesPerRow);
+    idx += width;
+  }
+
+  // UV interleaved: чередуем V и U (NV21 = VU, не UV)
+  for (int row = 0; row < height ~/ 2; row++) {
+    for (int col = 0; col < width ~/ 2; col++) {
+      final offset = row * uvRowStride + col * uvPixelStride;
+      nv21[idx++] = vPlane.bytes[offset]; // V
+      nv21[idx++] = uPlane.bytes[offset]; // U
+    }
+  }
+
+  // bytesPerRow = width (без padding, NV21 плотный)
+  return InputImage.fromBytes(bytes: nv21, metadata: ...nv21, bytesPerRow: width);
+}
+```
+
+iOS (`BGRA8888`) — один плейн, padding нет — старый код оставлен без изменений.
+
+---
+
 ## Все пункты плана выполнены
 
 | # | Функция | Статус |
