@@ -112,33 +112,4 @@
 
 ---
 
-## Текущая структура проекта
 
-```
-lib/
-├── main.dart                          # Точка входа, инициализация AppState
-├── screens/
-│   ├── home_screen.dart               # Дашборд + NavigationBar (4 вкладки)
-│   ├── floor_plan_screen.dart         # AR-сканирование (ARKit iOS / заглушка Android)
-│   ├── object_recognition_screen.dart # ML Kit распознавание объектов
-│   └── history_screen.dart            # История сессий
-├── services/
-│   ├── camera_service.dart            # Управление камерой
-│   ├── object_detection_service.dart  # ML Kit детектор
-│   ├── ar_scan_service.dart           # AR-сканирование, модели плоскостей
-│   ├── app_state.dart                 # Глобальное состояние (InheritedNotifier)
-│   └── app_storage.dart              # Слой хранения (shared_preferences)
-├── widgets/
-│   └── camera_preview_widget.dart     # Переиспользуемый превью камеры
-└── theme/
-    └── app_theme.dart                 # Централизованная тема
-```
-
----
-
-## Что планируется дальше
-
-- **ARCore для Android** — нативный platform channel или актуальный плагин
-- **Экспорт плана** — сохранение в PDF/PNG
-- **Улучшение ML Kit** — кастомная TFLite-модель для мебели (обучить через Roboflow)
-- **Онбординг** — первый запуск с объяснением функций

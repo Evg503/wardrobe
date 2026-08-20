@@ -50,3 +50,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // ARCore SDK — детектирование плоскостей на Android
+    implementation("com.google.ar:core:1.44.0")
+}
