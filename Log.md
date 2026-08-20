@@ -7,7 +7,8 @@
 | 1.0.0 | 1 | `06da1b0` | Первый релиз: UI, камера, ML Kit, ARKit, персистентность |
 | 1.1.0 | — | `2ce243a` | ARCore Android, экспорт PNG/PDF, EfficientDet-Lite0, онбординг |
 | 1.2.0 | 2 | `1642c9c` | Отображение версии в UI, исправления багов ARCore |
-| 1.3.0 | 3 | — | Фикс чёрного экрана ARCore (OES-текстура), фикс NPE в ML Kit (yuv420) |
+| 1.3.0 | 3 | `9c86937` | Фикс чёрного экрана ARCore (OES-текстура), фикс NPE в ML Kit (yuv420) |
+| 1.3.1 | 4 | — | Фикс поворота видео в ARCore |
 
 > Правило: версия поднимается с каждым билдом. Формат `pubspec.yaml`: `major.minor.patch+buildNumber`.
 
@@ -548,6 +549,59 @@ imageFormatGroup: Platform.isAndroid
    - `if (yPlane.bytes.isEmpty || ...) return null`
    - `uvPixelStride` fallback изменён с `?? 1` на `?? 2` (реальный stride interleaved UV-плейна)
    - Bounds check на `uvOffset` при копировании VU-байт
+
+### Баг 6 — видео повёрнуто в сканере квартиры на Android (`1.3.1+4`)
+
+**Симптом:** в экране сканирования ARCore видеопоток с камеры отображался повёрнутым (обычно на 90°).
+
+**Причина 1 — хардкоженный `rotation = 0` в `setDisplayGeometry`:**
+
+```kotlin
+// БЫЛО — всегда portrait, игнорирует реальную ориентацию
+arSession?.setDisplayGeometry(0, width, height)
+```
+
+`setDisplayGeometry` сообщает ARCore как ориентирован дисплей относительно камеры. Неверное значение → ARCore неправильно трансформирует UV-координаты → видео повёрнуто.
+
+**Причина 2 — хардкоженные UV-координаты:**
+
+```kotlin
+// БЫЛО — статические UV, не учитывают поворот
+private val QUAD_TEXCOORDS = floatArrayOf(
+    0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f,
+)
+```
+
+**Исправление:**
+
+1. **`getDisplayRotation()`** — читает реальный поворот через `WindowManager.defaultDisplay.rotation`, конвертирует в формат ARCore (0..3):
+
+```kotlin
+private fun getDisplayRotation(): Int {
+    val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    return when (wm.defaultDisplay.rotation) {
+        Surface.ROTATION_90  -> 1
+        Surface.ROTATION_180 -> 2
+        Surface.ROTATION_270 -> 3
+        else                 -> 0
+    }
+}
+```
+
+2. **`updateTransformedTexCoords(frame)`** — вместо статических UV используется `frame.transformCoordinates2d()`. ARCore сам вычисляет корректные UV-координаты для текущей ориентации дисплея и характеристик камеры:
+
+```kotlin
+frame.transformCoordinates2d(
+    Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
+    QUAD_COORDS,
+    Coordinates2d.TEXTURE_NORMALIZED,
+    transformed,
+)
+```
+
+Трансформированные UV обновляются каждый кадр и передаются в шейдер вместо хардкоженных. Это единственный надёжный способ — ARCore учитывает и поворот дисплея, и физическую ориентацию сенсора камеры, которая отличается от устройства к устройству.
+
+3. `setDisplayGeometry` теперь вызывается и в `onSurfaceChanged`, и в `createSession` (если viewport уже известен).
 
 ---
 
