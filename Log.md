@@ -9,6 +9,9 @@
 - **arkit_plugin ^1.5.0** — AR-сканирование планировки (iOS)
 - **shared_preferences ^2.3.0** — локальное хранилище данных
 - **vector_math ^2.1.4** — математика для AR
+- **pdf ^3.11.0** — векторная генерация PDF
+- **path_provider ^2.1.0** — доступ к временной директории
+- **share_plus ^10.0.0** — системный шит для отправки файлов
 
 ---
 
@@ -145,38 +148,56 @@ ArScanService.initAndroidChannels()          │
 
 ---
 
+---
+
+### 8. Экспорт плана в PNG и PDF
+
+**Новые файлы:**
+- `lib/services/export_service.dart` — статический сервис экспорта:
+  - `exportPng(GlobalKey)` — рендерит `RepaintBoundary` в изображение через `RenderRepaintBoundary.toImage(pixelRatio: 3.0)`, сохраняет PNG во временную директорию
+  - `exportPdf(ScanResult)` — строит PDF-документ через пакет `pdf`: векторный план (масштабированные прямоугольники горизонтальных плоскостей + линии стен), итоговая статистика, таблица поверхностей, timestamp и подпись
+  - `share(ExportResult)` — передаёт файл в системный шит через `share_plus`
+
+**Изменения:**
+- `pubspec.yaml` — добавлены `pdf ^3.11.0`, `path_provider ^2.1.0`, `share_plus ^10.0.0`
+- `lib/screens/floor_plan_screen.dart`:
+  - `_FloorPlanScreenState` — добавлен `GlobalKey _planRepaintKey`, метод `_showExportSheet(share:)` открывает `ModalBottomSheet` с выбором формата; `_doExport` вызывает `ExportService` и показывает snackbar с именем файла
+  - AppBar — кнопка «Поделиться» и новая кнопка «Скачать» активны при наличии плана; во время экспорта показывается `CircularProgressIndicator`
+  - `_PlanView` — добавлены параметры `onSave` и `planRepaintKey`; `CustomPaint` обёрнут в `RepaintBoundary(key: planRepaintKey)` для PNG-рендера; кнопка «Сохранить» подключена к `onSave`
+  - Новые виджеты `_ExportFormatSheet` и `_FormatTile` — bottomsheet выбора формата (PNG / PDF)
+
 ## Текущая структура проекта
 
 ```
 lib/
-├── main.dart                          # Точка входа, инициализация AppState
+├── main.dart
 ├── screens/
-│   ├── home_screen.dart               # Дашборд + NavigationBar (4 вкладки)
-│   ├── floor_plan_screen.dart         # AR-сканирование (ARKit iOS / ARCore Android)
-│   ├── object_recognition_screen.dart # ML Kit распознавание объектов
-│   └── history_screen.dart            # История сессий
+│   ├── home_screen.dart
+│   ├── floor_plan_screen.dart         # AR-сканирование + экспорт PNG/PDF
+│   ├── object_recognition_screen.dart
+│   └── history_screen.dart
 ├── services/
-│   ├── camera_service.dart            # Управление камерой
-│   ├── object_detection_service.dart  # ML Kit детектор
-│   ├── ar_scan_service.dart           # AR-сканирование iOS+Android, модели плоскостей
-│   ├── app_state.dart                 # Глобальное состояние (InheritedNotifier)
-│   └── app_storage.dart              # Слой хранения (shared_preferences)
+│   ├── camera_service.dart
+│   ├── object_detection_service.dart
+│   ├── ar_scan_service.dart
+│   ├── export_service.dart            # Экспорт плана в PNG и PDF
+│   ├── app_state.dart
+│   └── app_storage.dart
 ├── widgets/
-│   └── camera_preview_widget.dart     # Переиспользуемый превью камеры
+│   └── camera_preview_widget.dart
 └── theme/
-    └── app_theme.dart                 # Централизованная тема
+    └── app_theme.dart
 
 android/app/src/main/kotlin/com/example/wardrobe/
-├── MainActivity.kt                    # Регистрация ArCorePlugin
-├── ArCorePlugin.kt                    # PlatformViewFactory
-└── ArCoreView.kt                      # ARCore Session + EventChannel + MethodChannel
+├── MainActivity.kt
+├── ArCorePlugin.kt
+└── ArCoreView.kt
 ```
 
 ---
 
 ## Что планируется дальше
 
-- **Экспорт плана** — сохранение в PDF/PNG
 - **Улучшение ML Kit** — кастомная TFLite-модель для мебели (обучить через Roboflow)
 - **Онбординг** — первый запуск с объяснением функций
 
