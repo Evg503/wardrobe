@@ -7,6 +7,7 @@ import 'package:vector_math/vector_math_64.dart' as vector;
 
 import '../services/app_state.dart';
 import '../services/ar_scan_service.dart';
+import '../services/export_service.dart';
 import '../theme/app_theme.dart';
 
 class FloorPlanScreen extends StatefulWidget {
@@ -18,7 +19,9 @@ class FloorPlanScreen extends StatefulWidget {
 
 class _FloorPlanScreenState extends State<FloorPlanScreen> {
   final ArScanService _scanService = ArScanService();
+  final GlobalKey _planRepaintKey = GlobalKey();
   bool _hasPlan = false;
+  bool _exporting = false;
 
   @override
   void initState() {
@@ -56,6 +59,49 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
     setState(() => _hasPlan = false);
   }
 
+  // ── Экспорт ───────────────────────────────────────────────────────────────
+
+  Future<void> _showExportSheet({bool share = false}) async {
+    final format = await showModalBottomSheet<ExportFormat>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _ExportFormatSheet(share: share),
+    );
+    if (format == null || !mounted) return;
+    await _doExport(format, share: share);
+  }
+
+  Future<void> _doExport(ExportFormat format, {required bool share}) async {
+    if (_exporting) return;
+    setState(() => _exporting = true);
+    try {
+      ExportResult result;
+      if (format == ExportFormat.png) {
+        result = await ExportService.exportPng(_planRepaintKey);
+      } else {
+        result = await ExportService.exportPdf(_scanService.buildResult());
+      }
+      if (share) {
+        await ExportService.share(result, subject: 'План квартиры');
+      } else {
+        if (mounted) {
+          _showSnackBar(
+            context,
+            'Сохранено: ${result.path.split('/').last}',
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) _showSnackBar(context, 'Ошибка экспорта: $e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final isScanning = _scanService.isScanning;
@@ -64,12 +110,29 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
       appBar: AppBar(
         title: const Text('План квартиры'),
         actions: [
-          if (_hasPlan)
-            IconButton(
-              icon: const Icon(Icons.share),
-              tooltip: 'Поделиться',
-              onPressed: () => _showSnackBar(context, 'Экспорт плана (в разработке)'),
-            ),
+          if (_hasPlan) ...[
+            if (_exporting)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else ...[
+              IconButton(
+                icon: const Icon(Icons.share),
+                tooltip: 'Поделиться',
+                onPressed: () => _showExportSheet(share: true),
+              ),
+              IconButton(
+                icon: const Icon(Icons.download),
+                tooltip: 'Сохранить',
+                onPressed: () => _showExportSheet(share: false),
+              ),
+            ],
+          ],
           if (isScanning)
             IconButton(
               icon: const Icon(Icons.stop_circle_outlined),
@@ -89,6 +152,8 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
       return _PlanView(
         scanService: _scanService,
         onRescan: _resetScan,
+        onSave: () => _showExportSheet(share: false),
+        planRepaintKey: _planRepaintKey,
       );
     }
     if (isScanning) {
@@ -100,6 +165,79 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
   void _showSnackBar(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
+}
+
+// ── Bottomsheet выбора формата ────────────────────────────────────────────────
+
+class _ExportFormatSheet extends StatelessWidget {
+  final bool share;
+  const _ExportFormatSheet({required this.share});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            share ? 'Поделиться как...' : 'Сохранить как...',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 16),
+          _FormatTile(
+            icon: Icons.image_outlined,
+            title: 'PNG',
+            subtitle: 'Растровое изображение плана (высокое качество)',
+            onTap: () => Navigator.pop(context, ExportFormat.png),
+          ),
+          const SizedBox(height: 8),
+          _FormatTile(
+            icon: Icons.picture_as_pdf_outlined,
+            title: 'PDF',
+            subtitle: 'Документ с векторным планом и статистикой',
+            onTap: () => Navigator.pop(context, ExportFormat.pdf),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FormatTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _FormatTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      onTap: onTap,
+      leading: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: AppTheme.secondary.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: AppTheme.primary),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(subtitle),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
     );
   }
 }
@@ -474,8 +612,15 @@ class _AndroidArCoreView extends StatelessWidget {
 class _PlanView extends StatelessWidget {
   final ArScanService scanService;
   final VoidCallback onRescan;
+  final VoidCallback onSave;
+  final GlobalKey planRepaintKey;
 
-  const _PlanView({required this.scanService, required this.onRescan});
+  const _PlanView({
+    required this.scanService,
+    required this.onRescan,
+    required this.onSave,
+    required this.planRepaintKey,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -490,28 +635,31 @@ class _PlanView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Превью плана (CustomPainter — схематичное)
-          Container(
-            height: 260,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 16,
-                  offset: const Offset(0, 4),
+          // Превью плана — обёрнут в RepaintBoundary для PNG-экспорта
+          RepaintBoundary(
+            key: planRepaintKey,
+            child: Container(
+              height: 260,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: CustomPaint(
+                  painter: _FloorPlanPainter(
+                    horizontal: horizontal,
+                    vertical: vertical,
+                  ),
+                  size: Size.infinite,
                 ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: CustomPaint(
-                painter: _FloorPlanPainter(
-                  horizontal: horizontal,
-                  vertical: vertical,
-                ),
-                size: Size.infinite,
               ),
             ),
           ),
@@ -577,7 +725,7 @@ class _PlanView extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {},
+                  onPressed: onSave,
                   icon: const Icon(Icons.download),
                   label: const Text('Сохранить'),
                   style: ElevatedButton.styleFrom(
