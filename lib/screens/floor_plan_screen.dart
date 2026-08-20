@@ -533,8 +533,8 @@ class _ScanningViewState extends State<_ScanningView> {
                 ),
               ),
 
-              // Угловые маркеры для iOS
-              if (Platform.isIOS) ..._buildCornerMarkers(),
+              // Угловые маркеры
+              ..._buildCornerMarkers(),
             ],
           ),
         ),

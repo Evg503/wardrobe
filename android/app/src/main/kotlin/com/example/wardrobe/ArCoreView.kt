@@ -2,6 +2,8 @@ package com.example.wardrobe
 
 import android.app.Activity
 import android.content.Context
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.util.Log
 import android.view.View
@@ -17,11 +19,9 @@ import javax.microedition.khronos.opengles.GL10
 /**
  * Нативный ARCore-вид, встраиваемый в Flutter через PlatformView.
  *
- * Принимает [activity] явно — Flutter передаёт PlatformView ContextWrapper,
- * который не является Activity, поэтому прямой каст context as Activity падает.
- *
- * Детектирует горизонтальные и вертикальные плоскости и отправляет
- * обновления во Flutter через EventChannel ("wardrobe/arcore_planes").
+ * Рендерит видеопоток камеры через OES-текстуру + GLSL шейдер,
+ * параллельно детектирует плоскости и отправляет данные во Flutter
+ * через EventChannel.
  */
 class ArCoreView(
     private val context: Context,
@@ -34,11 +34,56 @@ class ArCoreView(
         private const val TAG = "ArCoreView"
         const val PLANES_CHANNEL = "wardrobe/arcore_planes"
         const val CONTROL_CHANNEL = "wardrobe/arcore_control"
+
+        // Вершинный шейдер — full-screen quad
+        private const val VERTEX_SHADER = """
+            attribute vec4 a_Position;
+            attribute vec2 a_TexCoord;
+            varying vec2 v_TexCoord;
+            void main() {
+                gl_Position = a_Position;
+                v_TexCoord = a_TexCoord;
+            }
+        """
+
+        // Фрагментный шейдер — семплирует OES-текстуру (кадр камеры)
+        private const val FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 v_TexCoord;
+            uniform samplerExternalOES u_Texture;
+            void main() {
+                gl_FragColor = texture2D(u_Texture, v_TexCoord);
+            }
+        """
+
+        // Координаты вершин full-screen quad
+        private val QUAD_COORDS = floatArrayOf(
+            -1f, -1f,   // bottom-left
+             1f, -1f,   // bottom-right
+            -1f,  1f,   // top-left
+             1f,  1f,   // top-right
+        )
+
+        // UV-координаты (Y перевёрнут — OpenGL и Android отличаются)
+        private val QUAD_TEXCOORDS = floatArrayOf(
+            0f, 1f,
+            1f, 1f,
+            0f, 0f,
+            1f, 0f,
+        )
     }
 
     private val glSurfaceView: GLSurfaceView = GLSurfaceView(context)
     private var arSession: Session? = null
     private var sessionPaused = true
+
+    // OpenGL объекты
+    private var cameraTextureId = -1
+    private var shaderProgram = -1
+    private var positionHandle = -1
+    private var texCoordHandle = -1
+    private var textureUniformHandle = -1
 
     // EventChannel для отправки плоскостей во Flutter
     private val eventChannel = EventChannel(messenger, "$PLANES_CHANNEL/$viewId")
@@ -47,7 +92,6 @@ class ArCoreView(
     // MethodChannel для управления сканированием
     private val controlChannel = MethodChannel(messenger, "$CONTROL_CHANNEL/$viewId")
 
-    // Уже отправленные плоскости (trackableId → данные) для дедупликации
     private val reportedPlanes = mutableMapOf<String, Map<String, Any>>()
 
     init {
@@ -65,20 +109,31 @@ class ArCoreView(
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        createCameraTexture()
+        createShaderProgram()
         initArSession()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+        GLES20.glViewport(0, 0, width, height)
         arSession?.setDisplayGeometry(0, width, height)
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+
         val session = arSession ?: return
         if (sessionPaused) return
 
         try {
-            session.setCameraTextureName(0) // нет реального рендера — только трекинг
+            session.setCameraTextureName(cameraTextureId)
             val frame = session.update()
+
+            // Рисуем кадр камеры
+            drawCameraFrame()
+
+            // Обрабатываем плоскости
             processPlanes(frame)
         } catch (e: CameraNotAvailableException) {
             Log.e(TAG, "Camera not available: ${e.message}")
@@ -88,20 +143,107 @@ class ArCoreView(
         }
     }
 
+    // ── OpenGL ────────────────────────────────────────────────────────────────
+
+    private fun createCameraTexture() {
+        val textures = IntArray(1)
+        GLES20.glGenTextures(1, textures, 0)
+        cameraTextureId = textures[0]
+
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_S,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_T,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MIN_FILTER,
+            GLES20.GL_LINEAR
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MAG_FILTER,
+            GLES20.GL_LINEAR
+        )
+    }
+
+    private fun createShaderProgram() {
+        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
+        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
+
+        shaderProgram = GLES20.glCreateProgram().also { program ->
+            GLES20.glAttachShader(program, vertexShader)
+            GLES20.glAttachShader(program, fragmentShader)
+            GLES20.glLinkProgram(program)
+        }
+
+        positionHandle = GLES20.glGetAttribLocation(shaderProgram, "a_Position")
+        texCoordHandle = GLES20.glGetAttribLocation(shaderProgram, "a_TexCoord")
+        textureUniformHandle = GLES20.glGetUniformLocation(shaderProgram, "u_Texture")
+    }
+
+    private fun compileShader(type: Int, source: String): Int {
+        return GLES20.glCreateShader(type).also { shader ->
+            GLES20.glShaderSource(shader, source)
+            GLES20.glCompileShader(shader)
+            val status = IntArray(1)
+            GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
+            if (status[0] == GLES20.GL_FALSE) {
+                Log.e(TAG, "Shader compile error: ${GLES20.glGetShaderInfoLog(shader)}")
+            }
+        }
+    }
+
+    private fun drawCameraFrame() {
+        if (shaderProgram == -1 || cameraTextureId == -1) return
+
+        GLES20.glUseProgram(shaderProgram)
+
+        // Позиции вершин
+        val coordsBuffer = java.nio.ByteBuffer
+            .allocateDirect(QUAD_COORDS.size * 4)
+            .order(java.nio.ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(QUAD_COORDS); position(0) }
+
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, coordsBuffer)
+        GLES20.glEnableVertexAttribArray(positionHandle)
+
+        // UV-координаты
+        val texBuffer = java.nio.ByteBuffer
+            .allocateDirect(QUAD_TEXCOORDS.size * 4)
+            .order(java.nio.ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(QUAD_TEXCOORDS); position(0) }
+
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texBuffer)
+        GLES20.glEnableVertexAttribArray(texCoordHandle)
+
+        // Текстура камеры
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glUniform1i(textureUniformHandle, 0)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        GLES20.glDisableVertexAttribArray(positionHandle)
+        GLES20.glDisableVertexAttribArray(texCoordHandle)
+    }
+
     // ── ARCore session ────────────────────────────────────────────────────────
 
     private fun initArSession() {
         try {
-            when (ArCoreApk.getInstance().requestInstall(
-                activity, true
-            )) {
-                ArCoreApk.InstallStatus.INSTALLED -> {
-                    createSession()
-                }
-                ArCoreApk.InstallStatus.INSTALL_REQUESTED -> {
-                    // Пользователю предложено установить AR Services — ждём
+            when (ArCoreApk.getInstance().requestInstall(activity, true)) {
+                ArCoreApk.InstallStatus.INSTALLED -> createSession()
+                ArCoreApk.InstallStatus.INSTALL_REQUESTED ->
                     sendError("install_requested", "ARCore installation required")
-                }
             }
         } catch (e: UnavailableUserDeclinedInstallationException) {
             sendError("install_declined", "User declined ARCore installation")
@@ -176,7 +318,6 @@ class ArCoreView(
                 "centerZ" to centerPose.tz().toDouble(),
             )
 
-            // Отправляем только если данные изменились
             val existing = reportedPlanes[id]
             val changed = existing == null ||
                     existing["extentX"] != planeData["extentX"] ||
@@ -184,26 +325,24 @@ class ArCoreView(
 
             if (changed) {
                 reportedPlanes[id] = planeData
-                glSurfaceView.post {
-                    eventSink?.success(planeData)
-                }
+                glSurfaceView.post { eventSink?.success(planeData) }
             }
         }
 
         // Удалённые плоскости
-        val allIds = frame.getUpdatedTrackables(Plane::class.java)
+        frame.getUpdatedTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.STOPPED }
             .map { it.hashCode().toString() }
-        for (removedId in allIds) {
-            if (reportedPlanes.remove(removedId) != null) {
-                glSurfaceView.post {
-                    eventSink?.success(mapOf("id" to removedId, "removed" to true))
+            .forEach { removedId ->
+                if (reportedPlanes.remove(removedId) != null) {
+                    glSurfaceView.post {
+                        eventSink?.success(mapOf("id" to removedId, "removed" to true))
+                    }
                 }
             }
-        }
     }
 
-    // ── Channels setup ────────────────────────────────────────────────────────
+    // ── Channels ──────────────────────────────────────────────────────────────
 
     private fun setupChannels() {
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
@@ -238,9 +377,7 @@ class ArCoreView(
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun sendError(code: String, message: String) {
-        glSurfaceView.post {
-            eventSink?.error(code, message, null)
-        }
+        glSurfaceView.post { eventSink?.error(code, message, null) }
     }
 
     // ── PlatformView lifecycle ────────────────────────────────────────────────
@@ -262,6 +399,14 @@ class ArCoreView(
         glSurfaceView.onPause()
         arSession?.close()
         arSession = null
+        if (cameraTextureId != -1) {
+            GLES20.glDeleteTextures(1, intArrayOf(cameraTextureId), 0)
+            cameraTextureId = -1
+        }
+        if (shaderProgram != -1) {
+            GLES20.glDeleteProgram(shaderProgram)
+            shaderProgram = -1
+        }
         eventChannel.setStreamHandler(null)
         controlChannel.setMethodCallHandler(null)
     }
