@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'floor_plan_screen.dart';
 import 'history_screen.dart';
 import 'object_recognition_screen.dart';
@@ -61,10 +62,62 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _DashboardTab extends StatelessWidget {
+class _DashboardTab extends StatefulWidget {
   final void Function(int) onNavigate;
 
   const _DashboardTab({required this.onNavigate});
+
+  @override
+  State<_DashboardTab> createState() => _DashboardTabState();
+}
+
+class _DashboardTabState extends State<_DashboardTab> {
+  String _version = '';
+  String _buildNumber = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _version = info.version;
+        _buildNumber = info.buildNumber;
+      });
+    }
+  }
+
+  void _showAbout() {
+    showAboutDialog(
+      context: context,
+      applicationName: 'Wardrobe',
+      applicationVersion: _version.isEmpty ? '' : 'v$_version (build $_buildNumber)',
+      applicationIcon: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          color: AppTheme.primary,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Icon(Icons.home_outlined, color: Colors.white, size: 32),
+      ),
+      children: [
+        const SizedBox(height: 8),
+        const Text(
+          'Приложение для AR-сканирования плана квартиры и распознавания '
+          'предметов мебели с помощью камеры.',
+        ),
+        const SizedBox(height: 12),
+        _AboutRow(icon: Icons.map_outlined, text: 'ARKit (iOS) · ARCore (Android)'),
+        _AboutRow(icon: Icons.auto_awesome, text: 'EfficientDet-Lite0 — COCO 80 классов'),
+        _AboutRow(icon: Icons.download_outlined, text: 'Экспорт плана в PNG и PDF'),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -72,7 +125,27 @@ class _DashboardTab extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Wardrobe'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Wardrobe'),
+            if (_version.isNotEmpty)
+              Text(
+                'v$_version',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppTheme.textSecondary,
+                      fontSize: 11,
+                    ),
+              ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            tooltip: 'О приложении',
+            onPressed: _showAbout,
+          ),
+        ],
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -102,7 +175,7 @@ class _DashboardTab extends StatelessWidget {
                 description:
                     'Сканируйте комнату камерой телефона и получите точный план с размерами',
                 color: const Color(0xFF2D4A3E),
-                onTap: () => onNavigate(1),
+                onTap: () => widget.onNavigate(1),
               ),
               const SizedBox(height: 16),
               _FeatureCard(
@@ -111,7 +184,7 @@ class _DashboardTab extends StatelessWidget {
                 description:
                     'Наведите камеру на предмет — приложение определит что это и добавит в каталог',
                 color: const Color(0xFF1A3A5C),
-                onTap: () => onNavigate(2),
+                onTap: () => widget.onNavigate(2),
               ),
               const SizedBox(height: 32),
               Row(
@@ -126,7 +199,7 @@ class _DashboardTab extends StatelessWidget {
                   ),
                   if (state.itemsRecognized > 0 || state.roomsScanned > 0)
                     TextButton(
-                      onPressed: () => onNavigate(3),
+                      onPressed: () => widget.onNavigate(3),
                       child: const Text('История →'),
                     ),
                 ],
@@ -231,6 +304,29 @@ class _FeatureCard extends StatelessWidget {
                 color: Colors.white.withValues(alpha: 0.7), size: 16),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _AboutRow extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _AboutRow({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: AppTheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text, style: const TextStyle(fontSize: 13)),
+          ),
+        ],
       ),
     );
   }
