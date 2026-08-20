@@ -112,4 +112,71 @@
 
 ---
 
+### 7. ARCore для Android (`9791471`)
+
+Реализован нативный platform channel для ARCore — полноценная замена заглушки на Android.
+
+**Новые файлы (Kotlin):**
+- `android/app/src/main/kotlin/com/example/wardrobe/ArCoreView.kt` — нативный `GLSurfaceView` + ARCore Session: инициализация, детектирование горизонтальных и вертикальных плоскостей, `EventChannel` для отправки плоскостей во Flutter, `MethodChannel` для управления (`resume/pause/reset`), дедупликация обновлений
+- `android/app/src/main/kotlin/com/example/wardrobe/ArCorePlugin.kt` — `PlatformViewFactory`, регистрирует `ArCoreView` под типом `"wardrobe/arcore_view"`
+
+**Изменения (Kotlin/Android):**
+- `MainActivity.kt` — регистрация `ArCorePlugin` через `flutterEngine.platformViewsController.registry`
+- `android/app/build.gradle.kts` — зависимость `com.google.ar:core:1.44.0`
+- `AndroidManifest.xml` — добавлен `<uses-feature android:glEsVersion="0x00030000">` (OpenGL ES 3.0 требует ARCore)
+
+**Изменения (Dart/Flutter):**
+- `lib/services/ar_scan_service.dart` — добавлен `initAndroidChannels(viewId)`: подписка на `EventChannel` плоскостей ARCore, `onAndroidPlaneEvent` парсит Map с нативной стороны, `_onAndroidError` для обработки ошибок; `isSupported` теперь `true` на обеих платформах; добавлен класс-константа `ArCoreView` с именами каналов
+- `lib/screens/floor_plan_screen.dart` — `_AndroidFallback` заменён на `_AndroidArCoreView` (`AndroidView`); при создании view вызывается `scanService.initAndroidChannels(viewId)`; баннер на стартовом экране обновлён с «в разработке» на «ARCore активен»; убран `AnimationController` (больше не нужен)
+
+**Архитектура:**
+
+```
+Flutter (Dart)                      Android (Kotlin)
+──────────────────────────────      ─────────────────────────────
+AndroidView("wardrobe/arcore_view") ──► ArCorePlugin (factory)
+                                              │
+                                         ArCoreView (GLSurfaceView)
+                                              │ ARCore Session
+ArScanService.initAndroidChannels()          │
+  EventChannel ◄─── planes stream ◄──────────┤
+  MethodChannel ──► resume/pause/reset ──────►│
+```
+
+---
+
+## Текущая структура проекта
+
+```
+lib/
+├── main.dart                          # Точка входа, инициализация AppState
+├── screens/
+│   ├── home_screen.dart               # Дашборд + NavigationBar (4 вкладки)
+│   ├── floor_plan_screen.dart         # AR-сканирование (ARKit iOS / ARCore Android)
+│   ├── object_recognition_screen.dart # ML Kit распознавание объектов
+│   └── history_screen.dart            # История сессий
+├── services/
+│   ├── camera_service.dart            # Управление камерой
+│   ├── object_detection_service.dart  # ML Kit детектор
+│   ├── ar_scan_service.dart           # AR-сканирование iOS+Android, модели плоскостей
+│   ├── app_state.dart                 # Глобальное состояние (InheritedNotifier)
+│   └── app_storage.dart              # Слой хранения (shared_preferences)
+├── widgets/
+│   └── camera_preview_widget.dart     # Переиспользуемый превью камеры
+└── theme/
+    └── app_theme.dart                 # Централизованная тема
+
+android/app/src/main/kotlin/com/example/wardrobe/
+├── MainActivity.kt                    # Регистрация ArCorePlugin
+├── ArCorePlugin.kt                    # PlatformViewFactory
+└── ArCoreView.kt                      # ARCore Session + EventChannel + MethodChannel
+```
+
+---
+
+## Что планируется дальше
+
+- **Экспорт плана** — сохранение в PDF/PNG
+- **Улучшение ML Kit** — кастомная TFLite-модель для мебели (обучить через Roboflow)
+- **Онбординг** — первый запуск с объяснением функций
 
