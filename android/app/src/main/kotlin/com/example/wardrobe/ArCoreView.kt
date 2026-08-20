@@ -18,16 +18,10 @@ import io.flutter.plugin.platform.PlatformView
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-/**
- * Нативный ARCore-вид, встраиваемый в Flutter через PlatformView.
- *
- * Рендерит видеопоток камеры через OES-текстуру + GLSL шейдер с
- * корректной ориентацией (frame.transformCoordinates2d).
- * Параллельно детектирует плоскости и отправляет данные во Flutter.
- */
 class ArCoreView(
     private val context: Context,
     private val messenger: BinaryMessenger,
@@ -39,6 +33,9 @@ class ArCoreView(
         private const val TAG = "ArCoreView"
         const val PLANES_CHANNEL = "wardrobe/arcore_planes"
         const val CONTROL_CHANNEL = "wardrobe/arcore_control"
+
+        // Минимальный интервал между отправками данных плоскостей во Flutter (мс)
+        private const val PLANE_REPORT_INTERVAL_MS = 300L
 
         private const val VERTEX_SHADER = """
             attribute vec4 a_Position;
@@ -60,20 +57,11 @@ class ArCoreView(
             }
         """
 
-        // Позиции вершин full-screen quad (NDC)
         private val QUAD_COORDS = floatArrayOf(
             -1f, -1f,
              1f, -1f,
             -1f,  1f,
              1f,  1f,
-        )
-
-        // UV-координаты до трансформации ARCore (нормализованные, portrait)
-        private val QUAD_TEXCOORDS_UNTRANSFORMED = floatArrayOf(
-            0f, 0f,
-            1f, 0f,
-            0f, 1f,
-            1f, 1f,
         )
     }
 
@@ -88,10 +76,19 @@ class ArCoreView(
     private var texCoordHandle = -1
     private var textureUniformHandle = -1
 
-    // Трансформированные UV от ARCore (корректная ориентация)
-    private var transformedTexCoords: FloatBuffer? = null
+    // Буферы аллоцируются один раз в onSurfaceCreated, переиспользуются каждый кадр
+    private lateinit var quadCoordsBuffer: FloatBuffer
+    private lateinit var texCoordsBuffer: FloatBuffer
+    private val transformedUVs = FloatArray(8) // 4 вершины × 2 координаты
+
     private var viewportWidth = 0
     private var viewportHeight = 0
+
+    // Throttling отправки плоскостей во Flutter
+    private var lastPlaneReportMs = 0L
+
+    // Флаг: предотвращает накопление post-задач в очереди GL-потока
+    private val planePendingPost = AtomicBoolean(false)
 
     private val eventChannel = EventChannel(messenger, "$PLANES_CHANNEL/$viewId")
     private var eventSink: EventChannel.EventSink? = null
@@ -114,6 +111,19 @@ class ArCoreView(
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
+
+        // Аллоцируем буферы один раз — переиспользуем каждый кадр
+        quadCoordsBuffer = ByteBuffer
+            .allocateDirect(QUAD_COORDS.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(QUAD_COORDS); position(0) }
+
+        texCoordsBuffer = ByteBuffer
+            .allocateDirect(transformedUVs.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+
         createCameraTexture()
         createShaderProgram()
         initArSession()
@@ -123,8 +133,6 @@ class ArCoreView(
         GLES20.glViewport(0, 0, width, height)
         viewportWidth = width
         viewportHeight = height
-        // Передаём реальный rotation дисплея — ARCore использует его для
-        // корректной ориентации кадра камеры в OES-текстуре
         arSession?.setDisplayGeometry(getDisplayRotation(), width, height)
     }
 
@@ -138,11 +146,15 @@ class ArCoreView(
             session.setCameraTextureName(cameraTextureId)
             val frame = session.update()
 
-            // Получаем трансформированные UV от ARCore для текущей ориентации
             updateTransformedTexCoords(frame)
-
             drawCameraFrame()
-            processPlanes(frame)
+
+            // Плоскости обрабатываем с throttling — не каждый кадр
+            val now = System.currentTimeMillis()
+            if (now - lastPlaneReportMs >= PLANE_REPORT_INTERVAL_MS) {
+                lastPlaneReportMs = now
+                processPlanes(frame)
+            }
         } catch (e: CameraNotAvailableException) {
             Log.e(TAG, "Camera not available: ${e.message}")
             sendError("camera_unavailable", e.message ?: "Camera not available")
@@ -166,17 +178,17 @@ class ArCoreView(
     }
 
     private fun createShaderProgram() {
-        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
-        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
+        val vs = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
+        val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
 
-        shaderProgram = GLES20.glCreateProgram().also { program ->
-            GLES20.glAttachShader(program, vertexShader)
-            GLES20.glAttachShader(program, fragmentShader)
-            GLES20.glLinkProgram(program)
+        shaderProgram = GLES20.glCreateProgram().also {
+            GLES20.glAttachShader(it, vs)
+            GLES20.glAttachShader(it, fs)
+            GLES20.glLinkProgram(it)
         }
 
-        positionHandle = GLES20.glGetAttribLocation(shaderProgram, "a_Position")
-        texCoordHandle = GLES20.glGetAttribLocation(shaderProgram, "a_TexCoord")
+        positionHandle       = GLES20.glGetAttribLocation(shaderProgram, "a_Position")
+        texCoordHandle       = GLES20.glGetAttribLocation(shaderProgram, "a_TexCoord")
         textureUniformHandle = GLES20.glGetUniformLocation(shaderProgram, "u_Texture")
     }
 
@@ -187,47 +199,34 @@ class ArCoreView(
             val status = IntArray(1)
             GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
             if (status[0] == GLES20.GL_FALSE) {
-                Log.e(TAG, "Shader compile error: ${GLES20.glGetShaderInfoLog(shader)}")
+                Log.e(TAG, "Shader error: ${GLES20.glGetShaderInfoLog(shader)}")
             }
         }
     }
 
-    /**
-     * Запрашивает у ARCore трансформированные UV-координаты для текущей
-     * ориентации дисплея. ARCore сам вычисляет нужный поворот/отражение.
-     */
     private fun updateTransformedTexCoords(frame: Frame) {
-        val transformed = FloatArray(QUAD_TEXCOORDS_UNTRANSFORMED.size)
+        // Переиспользуем transformedUVs и texCoordsBuffer — без аллокаций
         frame.transformCoordinates2d(
             Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
             QUAD_COORDS,
             Coordinates2d.TEXTURE_NORMALIZED,
-            transformed,
+            transformedUVs,
         )
-        transformedTexCoords = ByteBuffer
-            .allocateDirect(transformed.size * 4)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-            .apply { put(transformed); position(0) }
+        texCoordsBuffer.position(0)
+        texCoordsBuffer.put(transformedUVs)
+        texCoordsBuffer.position(0)
     }
 
     private fun drawCameraFrame() {
-        val texCoords = transformedTexCoords ?: return
         if (shaderProgram == -1 || cameraTextureId == -1) return
 
         GLES20.glUseProgram(shaderProgram)
 
-        val coordsBuffer = ByteBuffer
-            .allocateDirect(QUAD_COORDS.size * 4)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-            .apply { put(QUAD_COORDS); position(0) }
-
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, coordsBuffer)
+        quadCoordsBuffer.position(0)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, quadCoordsBuffer)
         GLES20.glEnableVertexAttribArray(positionHandle)
 
-        texCoords.position(0)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordsBuffer)
         GLES20.glEnableVertexAttribArray(texCoordHandle)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -270,7 +269,6 @@ class ArCoreView(
             }
             session.configure(config)
             arSession = session
-            // Сразу выставляем геометрию если viewport уже известен
             if (viewportWidth > 0 && viewportHeight > 0) {
                 session.setDisplayGeometry(getDisplayRotation(), viewportWidth, viewportHeight)
             }
@@ -295,17 +293,15 @@ class ArCoreView(
         sessionPaused = true
     }
 
-    /**
-     * Возвращает rotation дисплея в формате, который ожидает ARCore:
-     * 0 = ROTATION_0, 1 = ROTATION_90, 2 = ROTATION_180, 3 = ROTATION_270.
-     */
     private fun getDisplayRotation(): Int {
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        return when (wm.defaultDisplay.rotation) {
+        @Suppress("DEPRECATION")
+        val rotation = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+            .defaultDisplay.rotation
+        return when (rotation) {
             Surface.ROTATION_90  -> 1
             Surface.ROTATION_180 -> 2
             Surface.ROTATION_270 -> 3
-            else                 -> 0  // ROTATION_0 / portrait
+            else                 -> 0
         }
     }
 
@@ -314,6 +310,8 @@ class ArCoreView(
     private fun processPlanes(frame: Frame) {
         val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
         if (updatedPlanes.isEmpty()) return
+
+        val toSend = mutableListOf<Map<String, Any>>()
 
         for (plane in updatedPlanes) {
             if (plane.trackingState != TrackingState.TRACKING) continue
@@ -327,8 +325,8 @@ class ArCoreView(
             }
 
             val planeData = mapOf(
-                "id" to id,
-                "type" to type,
+                "id"      to id,
+                "type"    to type,
                 "extentX" to plane.extentX.toDouble(),
                 "extentZ" to plane.extentZ.toDouble(),
                 "centerX" to plane.centerPose.tx().toDouble(),
@@ -343,20 +341,30 @@ class ArCoreView(
 
             if (changed) {
                 reportedPlanes[id] = planeData
-                glSurfaceView.post { eventSink?.success(planeData) }
+                toSend.add(planeData)
             }
         }
 
+        // Удалённые плоскости
         frame.getUpdatedTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.STOPPED }
             .map { it.hashCode().toString() }
             .forEach { removedId ->
                 if (reportedPlanes.remove(removedId) != null) {
-                    glSurfaceView.post {
-                        eventSink?.success(mapOf("id" to removedId, "removed" to true))
-                    }
+                    toSend.add(mapOf("id" to removedId, "removed" to true))
                 }
             }
+
+        if (toSend.isEmpty()) return
+
+        // Один post на батч изменений; атомарный флаг исключает накопление задач
+        if (planePendingPost.compareAndSet(false, true)) {
+            val batch = toSend.toList()
+            glSurfaceView.post {
+                planePendingPost.set(false)
+                batch.forEach { eventSink?.success(it) }
+            }
+        }
     }
 
     // ── Channels ──────────────────────────────────────────────────────────────
@@ -373,10 +381,19 @@ class ArCoreView(
 
         controlChannel.setMethodCallHandler { call, result ->
             when (call.method) {
-                "resume" -> { resumeSession(); reportedPlanes.clear(); result.success(null) }
+                "resume" -> {
+                    resumeSession()
+                    reportedPlanes.clear()
+                    lastPlaneReportMs = 0L
+                    result.success(null)
+                }
                 "pause"  -> { pauseSession(); result.success(null) }
-                "reset"  -> { reportedPlanes.clear(); result.success(null) }
-                else     -> result.notImplemented()
+                "reset"  -> {
+                    reportedPlanes.clear()
+                    lastPlaneReportMs = 0L
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
         }
     }
