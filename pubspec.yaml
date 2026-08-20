@@ -2,7 +2,7 @@ name: wardrobe
 description: Wardrobe app - floor plan scanner and object recognition
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.2.0+2
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -16,6 +16,7 @@ dependencies:
   shared_preferences: ^2.3.0
   arkit_plugin: ^1.5.0
   vector_math: ^2.1.4
+  package_info_plus: ^8.0.0
   pdf: ^3.11.0
   path_provider: ^2.1.0
   path: ^1.9.0

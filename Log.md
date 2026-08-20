@@ -1,5 +1,17 @@
 # Wardrobe — История разработки
 
+## Версии приложения
+
+| Версия | Build | Коммит | Что изменилось |
+|--------|-------|--------|----------------|
+| 1.0.0 | 1 | `06da1b0` | Первый релиз: UI, камера, ML Kit, ARKit, персистентность |
+| 1.1.0 | — | `2ce243a` | ARCore Android, экспорт PNG/PDF, EfficientDet-Lite0, онбординг |
+| 1.2.0 | 2 | — | Отображение версии в UI, исправления багов ARCore |
+
+> Правило: версия поднимается с каждым билдом. Формат `pubspec.yaml`: `major.minor.patch+buildNumber`.
+
+---
+
 ## Стек технологий
 
 - **Flutter 3.47.0** / Dart — кроссплатформенный фреймворк (iOS + Android)
@@ -442,6 +454,19 @@ MainActivity (this: Activity)
 - Метод `requireActivity()` удалён
 
 `MainActivity` наследует `FlutterActivity extends Activity`, поэтому `this` всегда является корректным `Activity`.
+
+### Версионирование и отображение версии в UI
+
+**Правило:** версия поднимается в `pubspec.yaml` (`version: major.minor.patch+buildNumber`) с каждым релизным билдом. `buildNumber` — монотонно возрастающий счётчик.
+
+**Изменения:**
+- `pubspec.yaml` — версия `1.0.0+1` → `1.2.0+2`; добавлен `package_info_plus ^8.0.0`
+- `lib/screens/home_screen.dart`:
+  - `_DashboardTab` переведён из `StatelessWidget` в `StatefulWidget`
+  - `initState` загружает `PackageInfo.fromPlatform()` асинхронно
+  - AppBar title показывает `Wardrobe` + `v1.2.0` подзаголовком (появляется после загрузки)
+  - Кнопка `info_outline` в AppBar открывает стандартный `showAboutDialog` с версией, build-номером, иконкой и кратким описанием возможностей
+  - Вспомогательный виджет `_AboutRow` — строка с иконкой и текстом в About-диалоге
 
 ---
 
