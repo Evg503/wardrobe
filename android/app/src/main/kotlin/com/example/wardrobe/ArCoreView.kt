@@ -5,6 +5,9 @@ import android.content.Context
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.View
@@ -36,6 +39,9 @@ class ArCoreView(
 
         // Минимальный интервал между отправками данных плоскостей во Flutter (мс)
         private const val PLANE_REPORT_INTERVAL_MS = 300L
+
+        // Интервал рендеринга ~30fps для стабильности ARCore на 90/120Hz дисплеях
+        private const val RENDER_INTERVAL_MS = 33L
 
         private const val VERTEX_SHADER = """
             attribute vec4 a_Position;
@@ -106,7 +112,7 @@ class ArCoreView(
         glSurfaceView.preserveEGLContextOnPause = true
         glSurfaceView.setEGLContextClientVersion(2)
         glSurfaceView.setRenderer(this)
-        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -136,6 +142,15 @@ class ArCoreView(
         arSession?.setDisplayGeometry(getDisplayRotation(), width, height)
     }
 
+    // Throttling рендеринга — не чаще 30fps для стабильности ARCore
+    private var lastRenderMs = 0L
+
+    private fun scheduleNextFrame() {
+        Handler(Looper.getMainLooper()).postDelayed({
+            glSurfaceView.requestRender()
+        }, RENDER_INTERVAL_MS)
+    }
+
     override fun onDrawFrame(gl: GL10?) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
@@ -161,6 +176,8 @@ class ArCoreView(
         } catch (e: Exception) {
             Log.w(TAG, "Frame update error: ${e.message}")
         }
+
+        scheduleNextFrame()
     }
 
     // ── OpenGL ────────────────────────────────────────────────────────────────
@@ -283,6 +300,7 @@ class ArCoreView(
         try {
             arSession?.resume()
             sessionPaused = false
+            glSurfaceView.requestRender()
         } catch (e: CameraNotAvailableException) {
             sendError("camera_unavailable", "Camera not available")
         }

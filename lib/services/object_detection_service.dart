@@ -147,7 +147,15 @@ class ObjectDetectionService extends ChangeNotifier {
       final objects = await _detector!.processImage(inputImage);
       _results = _mapResults(objects, image.width, image.height);
       _errorMessage = null;
-    } catch (e) {
+    } on Exception catch (e) {
+      // Если NV21 падает с PlatformException — пробуем переключиться на base
+      if (_mode == DetectorMode.custom &&
+          e.toString().contains('InputImageConvert')) {
+        debugPrint('Switching to base mode after NV21 conversion failure');
+        _mode = DetectorMode.base;
+        await _createDetector();
+        return;
+      }
       _errorMessage = 'Ошибка распознавания: $e';
       debugPrint(_errorMessage);
     } finally {
@@ -184,10 +192,7 @@ class ObjectDetectionService extends ChangeNotifier {
     final rotation = _sensorToRotation(sensorOrientation, lensDirection);
 
     // Android: camera плагин отдаёт YUV_420_888 (три отдельных плейна).
-    // ML Kit Custom Model требует NV21-совместимый буфер.
-    // Конкатенация всех плейнов через WriteBuffer создаёт неверный layout
-    // и вызывает IllegalArgumentException в нативном конвертере.
-    // Решение: конвертируем YUV_420_888 → NV21 вручную (Y + interleaved VU).
+    // Конвертируем YUV_420_888 → NV21 вручную для ML Kit.
     if (Platform.isAndroid) {
       return _toInputImageAndroid(image, rotation);
     }

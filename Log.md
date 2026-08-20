@@ -9,7 +9,8 @@
 | 1.2.0 | 2 | `1642c9c` | Отображение версии в UI, исправления багов ARCore |
 | 1.3.0 | 3 | `9c86937` | Фикс чёрного экрана ARCore (OES-текстура), фикс NPE в ML Kit (yuv420) |
 | 1.3.1 | 4 | — | Фикс поворота видео в ARCore |
-| 1.3.2 | 5 | — | Фикс замирания и краша ARCore: переиспользование GL-буферов, throttling плоскостей, атомарный post-флаг |
+| 1.3.2 | 5 | — | Фикс замирания и краша ARCore: переиспользование GL-буферов, throttling плоскостей, atomic post-флаг, 30fps рендеринг |
+| 1.3.3 | 6 | — | Фикс InputImageConvertError при распознавании предметов: try-catch PlatformException, auto-fallback на base-детектор |
 
 > Правило: версия поднимается с каждым билдом. Формат `pubspec.yaml`: `major.minor.patch+buildNumber`.
 
@@ -606,7 +607,7 @@ frame.transformCoordinates2d(
 
 ---
 
-### 7. ARCore замирает и крашится (v1.3.2+5)
+### 7. ARCore замирает и крашится (v1.3.2+5, v1.3.3+6)
 
 **Симптомы:** съёмка плана квартиры замерзает на несколько секунд, потом пытается работать ещё немного, и приложение само закрывается.
 
@@ -625,6 +626,22 @@ frame.transformCoordinates2d(
 2. **Throttling плоскостей.** `processPlanes` вызывается не чаще раза в 300 мс (const `PLANE_REPORT_INTERVAL_MS`), вместо каждого кадра. Плоскости растут медленно — 60 Hz не нужно.
 
 3. **`AtomicBoolean` `planePendingPost`.** Предотвращает добавление нового `post`, пока предыдущий ещё не обработан. Очередь не растёт.
+
+4. **Throttling рендеринга до 30fps.** `RENDERMODE_WHEN_DIRTY` + `requestRender()` через `Handler.postDelayed(33ms)` вместо `RENDERMODE_CONTINUOUSLY` на 120Hz дисплее. ARCore стабильнее работает когда частота фреймов совпадает с внутренней частотой обработки.
+
+---
+
+### 8. InputImageConvertError при распознавании предметов (v1.3.3+6)
+
+**Симптомы:** `PlatformException(InputImageConvertError, java.lang.NullPointerException: Attempt to invoke virtual method 'java.lang.Class java.lang.Object.getClass()' on null object reference)`.
+
+**Коренная причина:** `InputImage.fromBytes` передаёт `Uint8List` через `StandardMethodCodec` в нативный `InputImageConverter`, где `(byte[]) Objects.requireNonNull(imageData.get("bytes"))` получает `null`. Происходит когда платформенный кодек теряет данные при передаче большого NV21-буфера (на `ResolutionPreset.medium` это ~1.5 МБ).
+
+**Фикс (`lib/services/object_detection_service.dart`):**
+
+1. Обёрнул `processFrame` в `on Exception catch` с проверкой `InputImageConvert` в строке ошибки.
+2. При конвертационном краше автоматически переключаюсь на `DetectorMode.base` (встроенная модель ML Kit), которая работает с форматами камеры напрямую и не требует NV21-конвертации.
+3. Базовая модель надёжнее — работает через встроенный формат камеры без ручных бинарных преобразований.
 
 ---
 
