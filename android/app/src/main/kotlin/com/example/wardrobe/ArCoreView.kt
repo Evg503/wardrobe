@@ -1,5 +1,6 @@
 package com.example.wardrobe
 
+import android.app.Activity
 import android.content.Context
 import android.opengl.GLSurfaceView
 import android.util.Log
@@ -16,13 +17,17 @@ import javax.microedition.khronos.opengles.GL10
 /**
  * Нативный ARCore-вид, встраиваемый в Flutter через PlatformView.
  *
+ * Принимает [activity] явно — Flutter передаёт PlatformView ContextWrapper,
+ * который не является Activity, поэтому прямой каст context as Activity падает.
+ *
  * Детектирует горизонтальные и вертикальные плоскости и отправляет
  * обновления во Flutter через EventChannel ("wardrobe/arcore_planes").
  */
 class ArCoreView(
     private val context: Context,
     private val messenger: BinaryMessenger,
-    viewId: Int
+    viewId: Int,
+    private val activity: Activity,
 ) : PlatformView, GLSurfaceView.Renderer {
 
     companion object {
@@ -88,7 +93,7 @@ class ArCoreView(
     private fun initArSession() {
         try {
             when (ArCoreApk.getInstance().requestInstall(
-                requireActivity(), true
+                activity, true
             )) {
                 ArCoreApk.InstallStatus.INSTALLED -> {
                     createSession()
@@ -231,11 +236,6 @@ class ArCoreView(
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private fun requireActivity(): android.app.Activity {
-        return (context as? android.app.Activity)
-            ?: throw IllegalStateException("Context is not an Activity")
-    }
 
     private fun sendError(code: String, message: String) {
         glSurfaceView.post {
