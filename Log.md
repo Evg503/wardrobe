@@ -505,6 +505,49 @@ onDrawFrame:
   processPlanes(frame)    → отправляем плоскости во Flutter
 ```
 
+### Баг 5 — `NullPointerException` в ML Kit при распознавании (`076ca33`)
+
+**Симптом:** `PlatformException(InputImageConvertError, java.lang.NullPointerException: Attempt to invoke virtual method 'java.lang.Class java.lang.Object.getClass()' on null object reference, null, null)` при нажатии «Распознать» на Android.
+
+**Причина:** `CameraService` инициализировал контроллер с `ImageFormatGroup.jpeg` на всех платформах:
+
+```dart
+imageFormatGroup: ImageFormatGroup.jpeg,  // НЕПРАВИЛЬНО для Android
+```
+
+На Android `imageStream` с форматом `jpeg` отдаёт **один плейн** с JPEG-кодированными байтами. Отдельных Y/U/V плейнов нет — `image.planes[1]` и `image.planes[2]` пустые или недоступны.
+
+NV21-конвертер в `_toInputImageAndroid()` обращался к `planes[1]` и `planes[2]` без проверки → передавал пустой/нулевой буфер в ML Kit → `InputImageConverter.java` вызывал `Objects.requireNonNull(imageData.get("bytes"))` на `null` → `NullPointerException`.
+
+**Цепочка:**
+```
+imageStream (jpeg) → один JPEG-плейн
+→ _toInputImageAndroid: planes[1].bytes пустой
+→ nv21 буфер частично пустой
+→ InputImage.fromBytes(bytes: nv21, ...)
+→ Java: Objects.requireNonNull(imageData.get("bytes")) → NPE
+```
+
+**Исправление:**
+
+1. **`camera_service.dart`** — раздельный `ImageFormatGroup` по платформе:
+
+```dart
+imageFormatGroup: Platform.isAndroid
+    ? ImageFormatGroup.yuv420   // три отдельных плейна Y/U/V
+    : ImageFormatGroup.bgra8888, // iOS: один BGRA плейн
+```
+
+`yuv420` на Android → `imageStream` отдаёт `YUV_420_888` с тремя корректными плейнами. NV21-конвертер работает правильно.
+
+Заодно снижено разрешение с `ResolutionPreset.high` до `medium` (~720p) — уменьшает размер буфера и нагрузку на platform channel.
+
+2. **`object_detection_service.dart`** — добавлены защитные проверки в `_toInputImageAndroid`:
+   - `if (image.planes.length < 3) return null`
+   - `if (yPlane.bytes.isEmpty || ...) return null`
+   - `uvPixelStride` fallback изменён с `?? 1` на `?? 2` (реальный stride interleaved UV-плейна)
+   - Bounds check на `uvOffset` при копировании VU-байт
+
 ---
 
 ## Все пункты плана выполнены
