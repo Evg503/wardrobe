@@ -208,39 +208,64 @@ class ObjectDetectionService extends ChangeNotifier {
 
   /// Конвертирует YUV_420_888 (Android) в NV21 для ML Kit.
   ///
-  /// YUV_420_888 имеет три отдельных плейна: Y, U, V.
-  /// NV21 — Y-плейн подряд, затем чередующиеся V и U (VU interleaved).
+  /// NV21: Y-плейн (width × height), затем чередующиеся VU (width/2 × height/2 × 2).
+  ///
+  /// Защитные меры:
+  /// - проверяем наличие всех трёх плейнов и непустые bytes
+  /// - bytesPerPixel для UV берём из реального значения, fallback = 1
+  /// - clamp uvOffset чтобы не выйти за пределы буфера
   mlkit.InputImage? _toInputImageAndroid(
     CameraImage image,
     mlkit.InputImageRotation rotation,
   ) {
     try {
+      // Защита: нужны ровно 3 плейна с непустыми данными
+      if (image.planes.length < 3) return null;
+
       final yPlane = image.planes[0];
       final uPlane = image.planes[1];
       final vPlane = image.planes[2];
 
-      final int width = image.width;
-      final int height = image.height;
-      final int uvRowStride = uPlane.bytesPerRow;
-      final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
-
-      // NV21: Y (width × height) + VU interleaved (width/2 × height/2 × 2)
-      final nv21 = Uint8List(width * height + (width ~/ 2) * (height ~/ 2) * 2);
-
-      // Копируем Y-плейн с учётом stride
-      int nv21Idx = 0;
-      for (int row = 0; row < height; row++) {
-        final rowStart = row * yPlane.bytesPerRow;
-        nv21.setRange(nv21Idx, nv21Idx + width, yPlane.bytes, rowStart);
-        nv21Idx += width;
+      if (yPlane.bytes.isEmpty || uPlane.bytes.isEmpty || vPlane.bytes.isEmpty) {
+        return null;
       }
 
-      // Копируем VU interleaved
-      for (int row = 0; row < height ~/ 2; row++) {
-        for (int col = 0; col < width ~/ 2; col++) {
-          final uvOffset = row * uvRowStride + col * uvPixelStride;
-          nv21[nv21Idx++] = vPlane.bytes[uvOffset]; // V
-          nv21[nv21Idx++] = uPlane.bytes[uvOffset]; // U
+      final int width = image.width;
+      final int height = image.height;
+      final int yRowStride = yPlane.bytesPerRow;
+      final int uvRowStride = uPlane.bytesPerRow;
+      // bytesPerPixel может быть null на некоторых устройствах
+      final int uvPixelStride = uPlane.bytesPerPixel ?? 2;
+
+      final int nv21Size = width * height + (width ~/ 2) * (height ~/ 2) * 2;
+      final nv21 = Uint8List(nv21Size);
+
+      // Y-плейн: копируем построчно с учётом stride (убираем padding)
+      int idx = 0;
+      for (int row = 0; row < height; row++) {
+        final rowStart = row * yRowStride;
+        final rowEnd = rowStart + width;
+        if (rowEnd <= yPlane.bytes.length) {
+          nv21.setRange(idx, idx + width, yPlane.bytes, rowStart);
+        }
+        idx += width;
+      }
+
+      // VU interleaved: для каждого UV-пикселя записываем V затем U
+      final int uvHeight = height ~/ 2;
+      final int uvWidth = width ~/ 2;
+      for (int row = 0; row < uvHeight; row++) {
+        for (int col = 0; col < uvWidth; col++) {
+          final int uvOffset = row * uvRowStride + col * uvPixelStride;
+          // Защита от выхода за пределы буфера
+          final int vByte = uvOffset < vPlane.bytes.length
+              ? vPlane.bytes[uvOffset]
+              : 128;
+          final int uByte = uvOffset < uPlane.bytes.length
+              ? uPlane.bytes[uvOffset]
+              : 128;
+          nv21[idx++] = vByte;
+          nv21[idx++] = uByte;
         }
       }
 
