@@ -23,6 +23,7 @@ class AppState extends ChangeNotifier {
   List<RecognitionSession> get recognitionSessions =>
       _storage.recognitionSessions;
   List<ScanSession> get scanSessions => _storage.scanSessions;
+  bool get onboardingCompleted => _storage.onboardingCompleted;
 
   // ── Действия ──────────────────────────────────────────────────────────────
 
@@ -57,6 +58,11 @@ class AppState extends ChangeNotifier {
 
     await _storage.saveRecognitionSession(session);
     await _storage.addItemsRecognized(items.length);
+    notifyListeners();
+  }
+
+  Future<void> completeOnboarding() async {
+    await _storage.completeOnboarding();
     notifyListeners();
   }
 

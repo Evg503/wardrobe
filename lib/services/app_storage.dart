@@ -8,6 +8,7 @@ class AppStorage {
   static const _keyItemsRecognized = 'items_recognized';
   static const _keyRecognitionSessions = 'recognition_sessions';
   static const _keyScanSessions = 'scan_sessions';
+  static const _keyOnboardingCompleted = 'onboarding_completed';
 
   final SharedPreferences _prefs;
 
@@ -65,11 +66,21 @@ class AppStorage {
     await _prefs.setStringList(_keyScanSessions, raw);
   }
 
+  // ── Онбординг ─────────────────────────────────────────────────────────────
+
+  bool get onboardingCompleted =>
+      _prefs.getBool(_keyOnboardingCompleted) ?? false;
+
+  Future<void> completeOnboarding() async {
+    await _prefs.setBool(_keyOnboardingCompleted, true);
+  }
+
   Future<void> clearAll() async {
     await _prefs.remove(_keyRoomsScanned);
     await _prefs.remove(_keyItemsRecognized);
     await _prefs.remove(_keyRecognitionSessions);
     await _prefs.remove(_keyScanSessions);
+    // Онбординг не сбрасываем при очистке истории
   }
 }
 

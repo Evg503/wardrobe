@@ -254,7 +254,77 @@ android/app/src/main/kotlin/com/example/wardrobe/
 
 ---
 
-## Что планируется дальше
+---
 
-- **Онбординг** — первый запуск с объяснением функций
+### 10. Онбординг (`OnboardingScreen`)
+
+Экран приветствия показывается только при первом запуске. После завершения флаг сохраняется в `SharedPreferences` и онбординг больше не отображается.
+
+**4 слайда:**
+
+| # | Иконка | Тема |
+|---|--------|------|
+| 1 | `home_outlined` | Добро пожаловать в Wardrobe |
+| 2 | `map_outlined` | Сканирование пространства (ARKit / ARCore) |
+| 3 | `chair_outlined` | Распознавание мебели (EfficientDet-Lite) |
+| 4 | `download_outlined` | Экспорт в PNG / PDF |
+
+**Новые файлы:**
+- `lib/screens/onboarding_screen.dart` — `PageView` из 4 слайдов; анимированные точки-индикаторы (активная расширяется в капсулу); кнопка «Далее» / «Начать» (AnimatedSwitcher); кнопка «Пропустить» скрывается на последнем слайде
+
+**Изменения:**
+- `lib/services/app_storage.dart` — ключ `onboarding_completed`, геттер и метод `completeOnboarding()`
+- `lib/services/app_state.dart` — геттер `onboardingCompleted`, метод `completeOnboarding()`
+- `lib/main.dart` — `home` определяется по `appState.onboardingCompleted`; `_OnboardingWrapper` вызывает `completeOnboarding()` и делает `pushReplacement` с fade-переходом на `HomeScreen`
+
+## Текущая структура проекта
+
+```
+lib/
+├── main.dart                          # Роутинг: онбординг → HomeScreen
+├── screens/
+│   ├── onboarding_screen.dart         # Первый запуск (4 слайда)
+│   ├── home_screen.dart
+│   ├── floor_plan_screen.dart         # AR-сканирование + экспорт PNG/PDF
+│   ├── object_recognition_screen.dart # ML Kit + EfficientDet-Lite0
+│   └── history_screen.dart
+├── services/
+│   ├── camera_service.dart
+│   ├── object_detection_service.dart  # Base + Custom TFLite режимы
+│   ├── export_service.dart            # Экспорт PNG / PDF
+│   ├── ar_scan_service.dart           # ARKit iOS + ARCore Android
+│   ├── app_state.dart                 # Глобальное состояние
+│   └── app_storage.dart              # SharedPreferences
+├── widgets/
+│   └── camera_preview_widget.dart
+└── theme/
+    └── app_theme.dart
+
+assets/
+└── ml/
+    ├── furniture_detector.tflite
+    └── furniture_labels.txt
+
+android/app/src/main/kotlin/com/example/wardrobe/
+├── MainActivity.kt
+├── ArCorePlugin.kt
+└── ArCoreView.kt
+```
+
+---
+
+## Все пункты плана выполнены
+
+| # | Функция | Статус |
+|---|---------|--------|
+| 1 | UI-прототип | ✅ |
+| 2 | Интеграция камеры | ✅ |
+| 3 | ML Kit распознавание | ✅ |
+| 4 | Android APK / iOS .app сборки | ✅ |
+| 5 | Персистентность данных | ✅ |
+| 6 | ARKit (iOS) | ✅ |
+| 7 | ARCore (Android) | ✅ |
+| 8 | Экспорт PNG / PDF | ✅ |
+| 9 | EfficientDet-Lite0 TFLite | ✅ |
+| 10 | Онбординг | ✅ |
 
