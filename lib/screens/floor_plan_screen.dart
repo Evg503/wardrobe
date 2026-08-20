@@ -30,7 +30,15 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
   }
 
   void _onScanUpdate() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // Показываем ошибку ARCore через SnackBar если она появилась
+    final err = _scanService.errorMessage;
+    if (err != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showSnackBar(context, err);
+      });
+    }
+    setState(() {});
   }
 
   @override
@@ -159,7 +167,10 @@ class _FloorPlanScreenState extends State<FloorPlanScreen> {
     if (isScanning) {
       return _ScanningView(scanService: _scanService, onStop: _stopScan);
     }
-    return _EmptyView(onStart: _startScan);
+    return _EmptyView(
+      onStart: _startScan,
+      errorMessage: _scanService.errorMessage,
+    );
   }
 
   void _showSnackBar(BuildContext context, String message) {
@@ -246,8 +257,9 @@ class _FormatTile extends StatelessWidget {
 
 class _EmptyView extends StatelessWidget {
   final VoidCallback onStart;
+  final String? errorMessage;
 
-  const _EmptyView({required this.onStart});
+  const _EmptyView({required this.onStart, this.errorMessage});
 
   @override
   Widget build(BuildContext context) {
@@ -327,6 +339,33 @@ class _EmptyView extends StatelessWidget {
                       'с поддержкой ARCore (Android 7.0+).',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: Colors.green.shade700,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          // Баннер ошибки ARCore
+          if (errorMessage != null) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      errorMessage!,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.red.shade700,
                           ),
                     ),
                   ),
