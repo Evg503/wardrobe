@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:arkit_plugin/arkit_plugin.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
 
 import '../services/app_state.dart';
@@ -174,20 +175,20 @@ class _EmptyView extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.1),
+                color: Colors.green.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.info_outline, color: Colors.amber, size: 18),
+                  const Icon(Icons.check_circle_outline, color: Colors.green, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'ARCore (Android): функция в разработке. '
-                      'Доступно на устройствах с поддержкой ARCore.',
+                      'ARCore активен. Доступно на устройствах '
+                      'с поддержкой ARCore (Android 7.0+).',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.amber.shade800,
+                            color: Colors.green.shade700,
                           ),
                     ),
                   ),
@@ -219,28 +220,12 @@ class _ScanningView extends StatefulWidget {
   State<_ScanningView> createState() => _ScanningViewState();
 }
 
-class _ScanningViewState extends State<_ScanningView>
-    with SingleTickerProviderStateMixin {
+class _ScanningViewState extends State<_ScanningView> {
   ARKitController? _arkitController;
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
-    _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-  }
 
   @override
   void dispose() {
     _arkitController?.dispose();
-    _pulseController.dispose();
     super.dispose();
   }
 
@@ -345,7 +330,7 @@ class _ScanningViewState extends State<_ScanningView>
         Expanded(
           child: Stack(
             children: [
-              // ARKit-вид (только iOS) или заглушка
+              // ARKit-вид (iOS) или ARCore PlatformView (Android)
               if (Platform.isIOS)
                 ARKitSceneView(
                   onARKitViewCreated: _onARKitViewCreated,
@@ -354,7 +339,11 @@ class _ScanningViewState extends State<_ScanningView>
                   showWorldOrigin: false,
                 )
               else
-                _AndroidFallback(pulseAnimation: _pulseAnimation),
+                _AndroidArCoreView(
+                  onViewCreated: (viewId) {
+                    widget.scanService.initAndroidChannels(viewId);
+                  },
+                ),
 
               // Оверлей со статистикой обнаружения
               Positioned(
@@ -460,45 +449,22 @@ class _ScanningFooter extends StatelessWidget {
   }
 }
 
-// ── Android-заглушка ──────────────────────────────────────────────────────────
+// ── ARCore View (Android) ─────────────────────────────────────────────────────
 
-class _AndroidFallback extends StatelessWidget {
-  final Animation<double> pulseAnimation;
+/// Встраивает нативный ARCore GLSurfaceView через PlatformView.
+/// [onViewCreated] вызывается с viewId сразу после создания виджета.
+class _AndroidArCoreView extends StatelessWidget {
+  final void Function(int viewId) onViewCreated;
 
-  const _AndroidFallback({required this.pulseAnimation});
+  const _AndroidArCoreView({required this.onViewCreated});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black87,
-      child: Center(
-        child: ScaleTransition(
-          scale: pulseAnimation,
-          child: Container(
-            width: 180,
-            height: 180,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: AppTheme.secondary.withValues(alpha: 0.7),
-                width: 2,
-              ),
-            ),
-            child: Center(
-              child: Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppTheme.secondary.withValues(alpha: 0.2),
-                  border: Border.all(color: AppTheme.secondary, width: 3),
-                ),
-                child: const Icon(Icons.radar, color: AppTheme.secondary, size: 48),
-              ),
-            ),
-          ),
-        ),
-      ),
+    return AndroidView(
+      viewType: ArCoreView.viewType,
+      layoutDirection: TextDirection.ltr,
+      creationParamsCodec: const StandardMessageCodec(),
+      onPlatformViewCreated: onViewCreated,
     );
   }
 }
