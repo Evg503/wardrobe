@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 
@@ -51,9 +53,15 @@ class CameraService extends ChangeNotifier {
 
     _controller = CameraController(
       description,
-      ResolutionPreset.high,
+      // medium (~720p) — достаточно для ML Kit, меньше нагрузка на channel
+      ResolutionPreset.medium,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      // Android imageStream требует yuv420 для получения трёх YUV-плейнов.
+      // С jpeg stream отдаёт один JPEG-плейн — NV21-конвертация падает с NPE.
+      // iOS поддерживает bgra8888 напрямую, yuv420 тоже работает.
+      imageFormatGroup: Platform.isAndroid
+          ? ImageFormatGroup.yuv420
+          : ImageFormatGroup.bgra8888,
     );
 
     try {
