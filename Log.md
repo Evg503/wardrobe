@@ -468,6 +468,43 @@ MainActivity (this: Activity)
   - Кнопка `info_outline` в AppBar открывает стандартный `showAboutDialog` с версией, build-номером, иконкой и кратким описанием возможностей
   - Вспомогательный виджет `_AboutRow` — строка с иконкой и текстом в About-диалоге
 
+### Баг 4 — чёрный экран вместо камеры в ARCore (`e1d1855`)
+
+**Симптом:** на Android после нажатия «Начать сканирование» вместо изображения с камеры отображался чёрный квадрат. Плоскости при этом могли детектироваться (данные приходили во Flutter), но пользователь не видел реальную картинку.
+
+**Причина:** `session.setCameraTextureName(0)` — хардкоженный `0` не является валидным OpenGL-текстурным ID.
+
+ARCore работает так: приложение выделяет OpenGL-текстуру типа `GL_TEXTURE_EXTERNAL_OES`, передаёт её ID в ARCore через `setCameraTextureName()`, и ARCore сам записывает в неё каждый кадр с камеры. Приложение затем рисует эту текстуру на экране. При `ID = 0` ARCore не знает куда писать — экран остаётся чёрным.
+
+**Исправление:**
+
+Добавлен полноценный OpenGL ES 2.0 рендер камеры:
+
+1. **`createCameraTexture()`** — выделяет `GL_TEXTURE_EXTERNAL_OES` через `glGenTextures`, настраивает `CLAMP_TO_EDGE` и `LINEAR`-фильтрацию. Вызывается в `onSurfaceCreated`.
+
+2. **`createShaderProgram()`** — компилирует два шейдера:
+   - Вершинный: рисует full-screen quad (4 вершины, `TRIANGLE_STRIP`)
+   - Фрагментный: `#extension GL_OES_EGL_image_external` + `samplerExternalOES` — единственный способ семплировать OES-текстуру
+
+3. **`drawCameraFrame()`** — вызывается каждый кадр в `onDrawFrame` перед `session.update()`:
+   - Биндит OES-текстуру на `GL_TEXTURE0`
+   - Рисует quad с UV-координатами (Y перевёрнут: `v = 1 - v`, иначе картинка вверх ногами)
+
+4. **`dispose()`** — `glDeleteTextures` + `glDeleteProgram` для предотвращения утечек GPU-ресурсов.
+
+```
+onSurfaceCreated:
+  createCameraTexture()   → cameraTextureId = glGenTextures()
+  createShaderProgram()   → компиляция шейдеров
+  initArSession()
+
+onDrawFrame:
+  setCameraTextureName(cameraTextureId)  → ARCore пишет кадр
+  session.update()
+  drawCameraFrame()       → рисуем OES-текстуру на экран
+  processPlanes(frame)    → отправляем плоскости во Flutter
+```
+
 ---
 
 ## Все пункты плана выполнены
